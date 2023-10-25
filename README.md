@@ -56,3 +56,7 @@ I (4261) RX_TASK: 0x3ffb821c   48 65 6c 6c 6f 20 77 6f  72 6c 64                
 ## Troubleshooting
 
 If you do not see any output from `RX_TASK` then check if you have the `RXD_PIN` and `TXD_PIN` pins shorted on the board.
+
+## PCB
+
+https://www.notion.so/ESP32S3_Adapter_V1-2-a935d3321fc945ec957f1909d480b05b?pvs=4
