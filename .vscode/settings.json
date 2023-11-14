@@ -1,6 +1,6 @@
 {
   "C_Cpp.intelliSenseEngine": "default",
-  "idf.portWin": "COM24",
+  "idf.portWin": "COM9",
   "idf.adapterTargetName": "esp32s3",
   "idf.openOcdConfigs": [
     "interface/ftdi/esp32_devkitj_v1.cfg",
@@ -18,7 +18,15 @@
     "memory": "c",
     "new": "c",
     "functional": "c",
-    "*.inc": "c"
+    "*.inc": "c",
+    "main_ch9434.C": "cpp",
+    "spi_master.h": "c",
+    "ch9434.h": "c",
+    "time.h": "c",
+    "_default_types.h": "c",
+    "atomic": "c",
+    "gpio.h": "c",
+    "esp_rom_sys.h": "c"
   },
   "idf.flashType": "UART"
 }

@@ -3,11 +3,18 @@
 #include "freertos/task.h"
 #include "esp_system.h"
 #include "esp_log.h"
+#include "esp_err.h"
 #include "driver/uart.h"
 #include "string.h"
 #include "driver/gpio.h"
 #include "freertos/portmacro.h"
+#include "driver/spi_master.h"
+#include "ch9434.h"
+#include "esp_rom_sys.h"
 
+/*
+ * UART pins and parameters definition
+ */
 static const int RX_BUF_SIZE = 1024;
 uint8_t result_data[100];
 int result_index;
@@ -15,19 +22,19 @@ char read_parameter[4] = {0xC1, 0xC1, 0xC1, '\0'};
 char read_version[4] = {0xC3, 0xC3, 0xC3, '\0'};
 char reset_device[4] = {0xC4, 0xC4, 0xC4, '\0'};
 
-#define UART1_TXD_PIN (GPIO_NUM_42)
-#define UART1_RXD_PIN (GPIO_NUM_41)
-#define UART2_TXD_PIN (GPIO_NUM_43)
-#define UART2_RXD_PIN (GPIO_NUM_44)
+#define UART1_TXD_PIN (GPIO_NUM_6)
+#define UART1_RXD_PIN (GPIO_NUM_7)
+#define UART2_TXD_PIN (GPIO_NUM_48)
+#define UART2_RXD_PIN (GPIO_NUM_38)
 
-#define M0 (GPIO_NUM_38)
-#define M1 (GPIO_NUM_39)
-#define AUX (GPIO_NUM_40)
+#define M0 (GPIO_NUM_5)
+#define M1 (GPIO_NUM_4)
+#define AUX (GPIO_NUM_15)
 
-#define ADDR1 (GPIO_NUM_21)
-#define ADDR2 (GPIO_NUM_14)
-#define ADDR3 (GPIO_NUM_2)
-#define ADDR4 (GPIO_NUM_1)
+#define ADDR1 (GPIO_NUM_42)
+#define ADDR2 (GPIO_NUM_41)
+#define ADDR3 (GPIO_NUM_40)
+#define ADDR4 (GPIO_NUM_39)
 
 typedef enum
 {
@@ -37,9 +44,131 @@ typedef enum
     SET = 3
 } modes_t;
 
-void uart1_init(void)
+/*
+ * CH9434 SPI parameters definition
+ */
+uint8_t uart_idx;
+uint8_t uart_iir;
+uint8_t uart_lsr;
+uint8_t uart_msr;
+
+uint16_t rec_buf_cnt = 0;
+uint8_t uart_rec_buf[512];
+
+uint32_t uart_rec_total_cnt[4] = {0, 0, 0, 0};
+
+#ifndef u8_t
+typedef unsigned char u8_t;
+#endif
+#ifndef u16_t
+typedef unsigned short u16_t;
+#endif
+#ifndef u32_t
+typedef unsigned long u32_t;
+#endif
+
+/*
+ * Function Name  : CH9434InitClkMode
+ * Description    : CH9434芯片时钟模式设置
+ * Input          : xt_en：外部晶振使能
+ *                  freq_mul_en：倍频功能使能
+ *                  div_num：分频系数
+ * Output         : None
+ * Return         : None
+ */
+void CH9434InitClkMode(u8_t xt_en, u8_t freq_mul_en, u8_t div_num)
 {
-    const uart_config_t uart1_config = {
+    uint8_t clk_ctrl_reg;
+    u16_t i;
+    uint8_t data[1] = {0x00};
+    spi_transaction_t t = {
+        .tx_buffer = data,
+        .length = 1 * 8};
+
+    clk_ctrl_reg = 0;
+    if (freq_mul_en)
+        clk_ctrl_reg |= (1 << 7);
+    if (xt_en)
+        clk_ctrl_reg |= (1 << 6);
+    clk_ctrl_reg |= (div_num & 0x1f);
+
+    /* ���㵱ǰ�Ĵ��ڻ�׼ʱ�� */
+    // sys_frequency
+    switch (clk_ctrl_reg & 0xc0)
+    {
+    case 0x00: // �ڲ�32M�ṩʱ��
+        sys_frequency = 32000000;
+        break;
+    case 0x40:                                                              // �ⲿ�����ṩʱ��
+        if ((osc_xt_frequency > 36000000) || (osc_xt_frequency < 24000000)) // ʱ�Ӵ���
+        {
+            return;
+        }
+        sys_frequency = osc_xt_frequency;
+        break;
+    case 0x80: // ʹ���ڲ�32M����������Ƶ
+        sys_frequency = 480000000 / (div_num & 0x1f);
+        if (sys_frequency > 40000000) // ʱ�Ӵ���
+        {
+            sys_frequency = 32000000;
+            return;
+        }
+        break;
+    case 0xc0:                                                              // ʹ���ⲿ���񣬲�������Ƶ
+        if ((osc_xt_frequency > 36000000) || (osc_xt_frequency < 24000000)) // ʱ�Ӵ���
+        {
+            return;
+        }
+        sys_frequency = osc_xt_frequency * 15 / (div_num & 0x1f);
+        if (sys_frequency > 40000000) // ʱ�Ӵ���
+        {
+            sys_frequency = 32000000;
+            return;
+        }
+        break;
+    }
+
+    // CH9434_SPI_SCS_OP(CH9434_DISABLE);
+    data[0] = CH9434_REG_OP_WRITE | CH9434_CLK_CTRL_CFG_ADD;
+    ESP_ERROR_CHECK(spi_device_polling_transmit(spi2, &t));
+    // CH9434_SPI_WRITE_BYTE(CH9434_REG_OP_WRITE | CH9434_CLK_CTRL_CFG_ADD);
+    CH9434_US_DELAY();
+    data[0] = clk_ctrl_reg;
+    ESP_ERROR_CHECK(spi_device_polling_transmit(spi2, &t));
+    // CH9434_SPI_WRITE_BYTE(clk_ctrl_reg);
+    CH9434_US_DELAY();
+    CH9434_US_DELAY();
+    CH9434_US_DELAY();
+    data[0] = CH9434_REG_OP_READ | CH9434_CLK_CTRL_CFG_ADD;
+    ESP_ERROR_CHECK(spi_device_polling_transmit(spi2, &t));
+    CH9434_US_DELAY();
+    CH9434_US_DELAY();
+    CH9434_US_DELAY();
+    // CH9434_SPI_SCS_OP(CH9434_ENABLE);
+    // for (i = 0; i < 50000; i++)
+    //     CH9434_US_DELAY();
+}
+
+esp_err_t spi_eeprom_read(void)
+{
+    uint8_t data[1] = {0xFF};
+    spi_transaction_t t = {
+        .length = 8,
+        // .addr = CH9434_REG_OP_READ | CH9434_CLK_CTRL_CFG_ADD,
+        .rxlength = 8,
+        .flags = SPI_TRANS_USE_RXDATA,
+    };
+    esp_err_t err = spi_device_polling_transmit(spi2, &t);
+    if (err != ESP_OK)
+        return err;
+
+    ESP_LOGI(TAG, "Receive data :%d...", t.rx_data[0]);
+    return ESP_OK;
+}
+
+void uart2_init(void)
+{
+    const uart_config_t uart2_config = {
         .baud_rate = 9600,
         .data_bits = UART_DATA_8_BITS,
         .parity = UART_PARITY_DISABLE,
@@ -48,15 +177,15 @@ void uart1_init(void)
         .source_clk = UART_SCLK_DEFAULT,
     };
     // We won't use a buffer for sending data.
-    uart_driver_install(UART_NUM_1, RX_BUF_SIZE * 2, 0, 0, NULL, 0);
-    uart_param_config(UART_NUM_1, &uart1_config);
-    uart_set_pin(UART_NUM_1, UART1_TXD_PIN, UART1_RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    uart_driver_install(UART_NUM_2, RX_BUF_SIZE * 2, 0, 0, NULL, 0);
+    uart_param_config(UART_NUM_2, &uart2_config);
+    uart_set_pin(UART_NUM_2, UART2_TXD_PIN, UART2_RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 }
 
 int sendData(const char *logName, const char *data)
 {
     const int len = strlen(data);
-    const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
+    const int txBytes = uart_write_bytes(UART_NUM_2, data, len);
     ESP_LOGI(logName, "Wrote %d bytes", txBytes);
     return txBytes;
 }
@@ -79,7 +208,7 @@ static void rx_task(void *arg)
     uint8_t *data = (uint8_t *)malloc(RX_BUF_SIZE + 1);
     while (1)
     {
-        const int rxBytes = uart_read_bytes(UART_NUM_1, data, RX_BUF_SIZE, 100 / portTICK_PERIOD_MS);
+        const int rxBytes = uart_read_bytes(UART_NUM_2, data, RX_BUF_SIZE, 100 / portTICK_PERIOD_MS);
         if (rxBytes > 0)
         {
             data[rxBytes] = 0;
@@ -118,9 +247,9 @@ static void rx_task(void *arg)
     free(data);
 }
 
-void uart2_init(void)
+void uart1_init(void)
 {
-    const uart_config_t uart2_config = {
+    const uart_config_t uart1_config = {
         .baud_rate = 9600,
         .data_bits = UART_DATA_8_BITS,
         .parity = UART_PARITY_DISABLE,
@@ -129,9 +258,9 @@ void uart2_init(void)
         .source_clk = UART_SCLK_DEFAULT,
     };
     // We won't use a buffer for sending data.
-    uart_driver_install(UART_NUM_2, RX_BUF_SIZE * 2, 0, 0, NULL, 0);
-    uart_param_config(UART_NUM_2, &uart2_config);
-    uart_set_pin(UART_NUM_2, UART2_TXD_PIN, UART2_RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+    uart_driver_install(UART_NUM_1, RX_BUF_SIZE * 2, 0, 0, NULL, 0);
+    uart_param_config(UART_NUM_1, &uart1_config);
+    uart_set_pin(UART_NUM_1, UART1_TXD_PIN, UART1_RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 }
 
 void e34_2g4d20d_init(void)
@@ -186,7 +315,7 @@ void e34_2g4d20d_model_sel(modes_t mode)
 int e34_2g4d20d_sendData(const char *logName, const char *data, int len)
 {
     // const int len = strlen(data);
-    const int txBytes = uart_write_bytes(UART_NUM_2, data, len);
+    const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
     ESP_LOGI(logName, "Wrote %d bytes", txBytes);
     ESP_LOG_BUFFER_HEXDUMP(logName, data, len, ESP_LOG_INFO);
     return txBytes;
@@ -217,7 +346,7 @@ static void e34_2g4d20d_rx_task(void *arg)
     uint8_t *data = (uint8_t *)malloc(RX_BUF_SIZE + 1);
     while (1)
     {
-        const int rxBytes = uart_read_bytes(UART_NUM_2, data, RX_BUF_SIZE, 100 / portTICK_PERIOD_MS);
+        const int rxBytes = uart_read_bytes(UART_NUM_1, data, RX_BUF_SIZE, 100 / portTICK_PERIOD_MS);
         if (rxBytes > 0)
         {
             data[rxBytes] = 0;
@@ -228,13 +357,39 @@ static void e34_2g4d20d_rx_task(void *arg)
     free(data);
 }
 
+static void spi_tx_task(void *arg)
+{
+    static const char *SPI_TX_TASK_TAG = "SPI_TX_TASK";
+    esp_log_level_set(SPI_TX_TASK_TAG, ESP_LOG_INFO);
+    // uint8_t data[2] = {0x44, 0x66};
+
+    // spi_transaction_t t = {
+    //     .tx_buffer = data,
+    //     .length = 2 * 8};
+    while (1)
+    {
+        // ESP_ERROR_CHECK(spi_device_polling_transmit(spi2, &t));
+        vTaskDelay(2000 / portTICK_PERIOD_MS);
+        /* SPI transmit test */
+        /* init CH9434 */
+        CH9434InitClkMode(CH9434_ENABLE, // extern Crystal oscillator
+                          CH9434_ENABLE, // enable frequency doubling
+                          13);           // Frequency division coefficient
+        spi_eeprom_read();
+        // vTaskDelay(50 / portTICK_PERIOD_MS);
+    }
+}
+
 void app_main(void)
 {
     uart1_init();
     uart2_init();
     e34_2g4d20d_init();
-    xTaskCreate(rx_task, "uart_rx_task", 1024 * 8, NULL, configMAX_PRIORITIES, NULL);
+    ch9434_rst_init();
+    // spi2_init();
+    // xTaskCreate(rx_task, "uart_rx_task", 1024 * 8, NULL, configMAX_PRIORITIES, NULL);
     xTaskCreate(tx_task, "uart_tx_task", 1024 * 8, NULL, configMAX_PRIORITIES - 1, NULL);
-    xTaskCreate(e34_2g4d20d_rx_task, "e34_2g4d20d_rx_task", 1024 * 8, NULL, configMAX_PRIORITIES, NULL);
-    xTaskCreate(e34_2g4d20d_tx_task, "e34_2g4d20d_tx_task", 1024 * 8, NULL, configMAX_PRIORITIES - 1, NULL);
+    // xTaskCreate(e34_2g4d20d_rx_task, "e34_2g4d20d_rx_task", 1024 * 8, NULL, configMAX_PRIORITIES, NULL);
+    // xTaskCreate(e34_2g4d20d_tx_task, "e34_2g4d20d_tx_task", 1024 * 8, NULL, configMAX_PRIORITIES - 1, NULL);
+    // xTaskCreate(spi_tx_task, "spi_tx_task", 1024 * 8, NULL, configMAX_PRIORITIES - 1, NULL);
 }
