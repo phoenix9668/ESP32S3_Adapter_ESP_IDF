@@ -57,115 +57,6 @@ uint8_t uart_rec_buf[512];
 
 uint32_t uart_rec_total_cnt[4] = {0, 0, 0, 0};
 
-#ifndef u8_t
-typedef unsigned char u8_t;
-#endif
-#ifndef u16_t
-typedef unsigned short u16_t;
-#endif
-#ifndef u32_t
-typedef unsigned long u32_t;
-#endif
-
-/*
- * Function Name  : CH9434InitClkMode
- * Description    : CH9434芯片时钟模式设置
- * Input          : xt_en：外部晶振使能
- *                  freq_mul_en：倍频功能使能
- *                  div_num：分频系数
- * Output         : None
- * Return         : None
- */
-void CH9434InitClkMode(u8_t xt_en, u8_t freq_mul_en, u8_t div_num)
-{
-    uint8_t clk_ctrl_reg;
-    u16_t i;
-    uint8_t data[1] = {0x00};
-    spi_transaction_t t = {
-        .tx_buffer = data,
-        .length = 1 * 8};
-
-    clk_ctrl_reg = 0;
-    if (freq_mul_en)
-        clk_ctrl_reg |= (1 << 7);
-    if (xt_en)
-        clk_ctrl_reg |= (1 << 6);
-    clk_ctrl_reg |= (div_num & 0x1f);
-
-    /* ���㵱ǰ�Ĵ��ڻ�׼ʱ�� */
-    // sys_frequency
-    switch (clk_ctrl_reg & 0xc0)
-    {
-    case 0x00: // �ڲ�32M�ṩʱ��
-        sys_frequency = 32000000;
-        break;
-    case 0x40:                                                              // �ⲿ�����ṩʱ��
-        if ((osc_xt_frequency > 36000000) || (osc_xt_frequency < 24000000)) // ʱ�Ӵ���
-        {
-            return;
-        }
-        sys_frequency = osc_xt_frequency;
-        break;
-    case 0x80: // ʹ���ڲ�32M����������Ƶ
-        sys_frequency = 480000000 / (div_num & 0x1f);
-        if (sys_frequency > 40000000) // ʱ�Ӵ���
-        {
-            sys_frequency = 32000000;
-            return;
-        }
-        break;
-    case 0xc0:                                                              // ʹ���ⲿ���񣬲�������Ƶ
-        if ((osc_xt_frequency > 36000000) || (osc_xt_frequency < 24000000)) // ʱ�Ӵ���
-        {
-            return;
-        }
-        sys_frequency = osc_xt_frequency * 15 / (div_num & 0x1f);
-        if (sys_frequency > 40000000) // ʱ�Ӵ���
-        {
-            sys_frequency = 32000000;
-            return;
-        }
-        break;
-    }
-
-    // CH9434_SPI_SCS_OP(CH9434_DISABLE);
-    data[0] = CH9434_REG_OP_WRITE | CH9434_CLK_CTRL_CFG_ADD;
-    ESP_ERROR_CHECK(spi_device_polling_transmit(spi2, &t));
-    // CH9434_SPI_WRITE_BYTE(CH9434_REG_OP_WRITE | CH9434_CLK_CTRL_CFG_ADD);
-    CH9434_US_DELAY();
-    data[0] = clk_ctrl_reg;
-    ESP_ERROR_CHECK(spi_device_polling_transmit(spi2, &t));
-    // CH9434_SPI_WRITE_BYTE(clk_ctrl_reg);
-    CH9434_US_DELAY();
-    CH9434_US_DELAY();
-    CH9434_US_DELAY();
-    data[0] = CH9434_REG_OP_READ | CH9434_CLK_CTRL_CFG_ADD;
-    ESP_ERROR_CHECK(spi_device_polling_transmit(spi2, &t));
-    CH9434_US_DELAY();
-    CH9434_US_DELAY();
-    CH9434_US_DELAY();
-    // CH9434_SPI_SCS_OP(CH9434_ENABLE);
-    // for (i = 0; i < 50000; i++)
-    //     CH9434_US_DELAY();
-}
-
-esp_err_t spi_eeprom_read(void)
-{
-    uint8_t data[1] = {0xFF};
-    spi_transaction_t t = {
-        .length = 8,
-        // .addr = CH9434_REG_OP_READ | CH9434_CLK_CTRL_CFG_ADD,
-        .rxlength = 8,
-        .flags = SPI_TRANS_USE_RXDATA,
-    };
-    esp_err_t err = spi_device_polling_transmit(spi2, &t);
-    if (err != ESP_OK)
-        return err;
-
-    ESP_LOGI(TAG, "Receive data :%d...", t.rx_data[0]);
-    return ESP_OK;
-}
-
 void uart2_init(void)
 {
     const uart_config_t uart2_config = {
@@ -357,26 +248,162 @@ static void e34_2g4d20d_rx_task(void *arg)
     free(data);
 }
 
-static void spi_tx_task(void *arg)
+static void ch9434_task(void *arg)
 {
-    static const char *SPI_TX_TASK_TAG = "SPI_TX_TASK";
-    esp_log_level_set(SPI_TX_TASK_TAG, ESP_LOG_INFO);
-    // uint8_t data[2] = {0x44, 0x66};
+    static const char *CH9434_TASK_TAG = "CH9434_TASK";
+    esp_log_level_set(CH9434_TASK_TAG, ESP_LOG_INFO);
+    ESP_LOGI(CH9434_TASK_TAG, "** CH9434 hardware test demo. ** \n");
+    /* init CH9434 */
+    CH9434InitClkMode(CH9434_ENABLE, // extern Crystal oscillator
+                      CH9434_ENABLE, // enable frequency doubling
+                      13);           // Frequency division coefficient
+    vTaskDelay(50 / portTICK_PERIOD_MS);
+    /* init uart */
+    uint32_t test_bps = 115200;
+    // init uart0
+    CH9434UARTxParaSet(CH9434_UART_IDX_0, test_bps,
+                       CH9434_UART_8_BITS_PER_CHAR,
+                       CH9434_UART_ONE_STOP_BIT,
+                       CH9434_UART_NO_PARITY);
+    CH9434UARTxFIFOSet(CH9434_UART_IDX_0,
+                       CH9434_ENABLE,
+                       CH9434_UART_FIFO_MODE_1280);
+    CH9434UARTxFlowSet(CH9434_UART_IDX_0,
+                       CH9434_DISABLE);
+    CH9434UARTxIrqSet(CH9434_UART_IDX_0,
+                      CH9434_DISABLE, // modem signal interrupt
+                      CH9434_ENABLE,  // line status interrupt
+                      CH9434_ENABLE,  // send interrupt
+                      CH9434_ENABLE); // receive interrupt
+    CH9434UARTxIrqOpen(CH9434_UART_IDX_0);
+    CH9434UARTxRtsDtrPin(CH9434_UART_IDX_0,
+                         CH9434_DISABLE,  // RTS pin level status
+                         CH9434_DISABLE); // DTR pin level status
 
-    // spi_transaction_t t = {
-    //     .tx_buffer = data,
-    //     .length = 2 * 8};
+    // init uart1
+    CH9434UARTxParaSet(CH9434_UART_IDX_1, test_bps,
+                       CH9434_UART_8_BITS_PER_CHAR,
+                       CH9434_UART_ONE_STOP_BIT,
+                       CH9434_UART_NO_PARITY);
+    CH9434UARTxFIFOSet(CH9434_UART_IDX_1,
+                       CH9434_ENABLE,
+                       CH9434_UART_FIFO_MODE_1280);
+    CH9434UARTxFlowSet(CH9434_UART_IDX_1,
+                       CH9434_DISABLE);
+    CH9434UARTxIrqSet(CH9434_UART_IDX_1,
+                      CH9434_DISABLE, // modem signal interrupt
+                      CH9434_ENABLE,  // line status interrupt
+                      CH9434_ENABLE,  // send interrupt
+                      CH9434_ENABLE); // receive interrupt
+    CH9434UARTxIrqOpen(CH9434_UART_IDX_1);
+    CH9434UARTxRtsDtrPin(CH9434_UART_IDX_1,
+                         CH9434_DISABLE,  // RTS pin level status
+                         CH9434_DISABLE); // DTR pin level status
+
+    // init uart2
+    CH9434UARTxParaSet(CH9434_UART_IDX_2, test_bps,
+                       CH9434_UART_8_BITS_PER_CHAR,
+                       CH9434_UART_ONE_STOP_BIT,
+                       CH9434_UART_NO_PARITY);
+    CH9434UARTxFIFOSet(CH9434_UART_IDX_2,
+                       CH9434_ENABLE,
+                       CH9434_UART_FIFO_MODE_1280);
+    CH9434UARTxFlowSet(CH9434_UART_IDX_2,
+                       CH9434_DISABLE);
+    CH9434UARTxIrqSet(CH9434_UART_IDX_2,
+                      CH9434_DISABLE, // modem signal interrupt
+                      CH9434_ENABLE,  // line status interrupt
+                      CH9434_ENABLE,  // send interrupt
+                      CH9434_ENABLE); // receive interrupt
+    CH9434UARTxIrqOpen(CH9434_UART_IDX_2);
+    CH9434UARTxRtsDtrPin(CH9434_UART_IDX_2,
+                         CH9434_DISABLE,  // RTS pin level status
+                         CH9434_DISABLE); // DTR pin level status
+
+    // init uart3
+    CH9434UARTxParaSet(CH9434_UART_IDX_3, test_bps,
+                       CH9434_UART_8_BITS_PER_CHAR,
+                       CH9434_UART_ONE_STOP_BIT,
+                       CH9434_UART_NO_PARITY);
+    CH9434UARTxFIFOSet(CH9434_UART_IDX_3,
+                       CH9434_ENABLE,
+                       CH9434_UART_FIFO_MODE_1280);
+    CH9434UARTxFlowSet(CH9434_UART_IDX_3,
+                       CH9434_DISABLE);
+    CH9434UARTxIrqSet(CH9434_UART_IDX_3,
+                      CH9434_DISABLE, // modem signal interrupt
+                      CH9434_ENABLE,  // line status interrupt
+                      CH9434_ENABLE,  // send interrupt
+                      CH9434_ENABLE); // receive interrupt
+    CH9434UARTxIrqOpen(CH9434_UART_IDX_3);
+    CH9434UARTxRtsDtrPin(CH9434_UART_IDX_3,
+                         CH9434_DISABLE,  // RTS pin level status
+                         CH9434_DISABLE); // DTR pin level status
     while (1)
     {
-        // ESP_ERROR_CHECK(spi_device_polling_transmit(spi2, &t));
-        vTaskDelay(2000 / portTICK_PERIOD_MS);
-        /* SPI transmit test */
-        /* init CH9434 */
-        CH9434InitClkMode(CH9434_ENABLE, // extern Crystal oscillator
-                          CH9434_ENABLE, // enable frequency doubling
-                          13);           // Frequency division coefficient
-        spi_eeprom_read();
-        // vTaskDelay(50 / portTICK_PERIOD_MS);
+        if (gpio_get_level(CH9434_INT) == 0) // INT level is low
+        {
+            for (uart_idx = 0; uart_idx < 4; uart_idx++)
+            {
+                uart_iir = CH9434UARTxReadIIR(uart_idx);
+                ESP_LOGI(CH9434_TASK_TAG, "idx:%d uart_iir:%02x", uart_idx, uart_iir);
+                switch (uart_iir & 0x0f)
+                {
+                case 0x01: // no interrupt
+                    break;
+                case 0x06: // receive line status
+                {
+                    uart_lsr = CH9434UARTxReadLSR(uart_idx);
+                    ESP_LOGI(CH9434_TASK_TAG, "uart_lsr:%02x", uart_lsr);
+                    rec_buf_cnt = CH9434UARTxGetRxFIFOLen(uart_idx);
+                    if (rec_buf_cnt)
+                    {
+                        CH9434UARTxGetRxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
+                        uart_rec_total_cnt[uart_idx] += rec_buf_cnt;
+                        ESP_LOGI(CH9434_TASK_TAG, "idx:%d rec:%d total:%d", uart_idx, rec_buf_cnt,
+                                 (int)uart_rec_total_cnt[uart_idx]);
+                        CH9434UARTxSetTxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
+                    }
+                    break;
+                }
+                case 0x04: // receive data available
+                {
+                    rec_buf_cnt = CH9434UARTxGetRxFIFOLen(uart_idx);
+                    if (rec_buf_cnt)
+                    {
+                        CH9434UARTxGetRxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
+                        uart_rec_total_cnt[uart_idx] += rec_buf_cnt;
+                        ESP_LOGI(CH9434_TASK_TAG, "idx:%d rec:%d total:%d", uart_idx, rec_buf_cnt,
+                                 (int)uart_rec_total_cnt[uart_idx]);
+                        CH9434UARTxSetTxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
+                    }
+                    break;
+                }
+                case 0x0C: // receive data timeout
+                {
+                    rec_buf_cnt = CH9434UARTxGetRxFIFOLen(uart_idx);
+                    if (rec_buf_cnt)
+                    {
+                        CH9434UARTxGetRxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
+                        uart_rec_total_cnt[uart_idx] += rec_buf_cnt;
+                        ESP_LOGI(CH9434_TASK_TAG, "idx:%d rec:%d total:%d", uart_idx, rec_buf_cnt,
+                                 (int)uart_rec_total_cnt[uart_idx]);
+                        CH9434UARTxSetTxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
+                    }
+                    break;
+                }
+                case 0x02: // THR register empty
+                    break;
+                case 0x00: // modem signal change
+                {
+                    uart_msr = CH9434UARTxReadMSR(uart_idx);
+                    ESP_LOGI(CH9434_TASK_TAG, "uart_msr:%02x", uart_msr);
+                    break;
+                }
+                }
+            }
+        }
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
     }
 }
 
@@ -385,11 +412,10 @@ void app_main(void)
     uart1_init();
     uart2_init();
     e34_2g4d20d_init();
-    ch9434_rst_init();
-    // spi2_init();
+    ch9434_spi2_init();
     // xTaskCreate(rx_task, "uart_rx_task", 1024 * 8, NULL, configMAX_PRIORITIES, NULL);
     xTaskCreate(tx_task, "uart_tx_task", 1024 * 8, NULL, configMAX_PRIORITIES - 1, NULL);
     // xTaskCreate(e34_2g4d20d_rx_task, "e34_2g4d20d_rx_task", 1024 * 8, NULL, configMAX_PRIORITIES, NULL);
     // xTaskCreate(e34_2g4d20d_tx_task, "e34_2g4d20d_tx_task", 1024 * 8, NULL, configMAX_PRIORITIES - 1, NULL);
-    // xTaskCreate(spi_tx_task, "spi_tx_task", 1024 * 8, NULL, configMAX_PRIORITIES - 1, NULL);
+    xTaskCreate(ch9434_task, "ch9434_task", 1024 * 8, NULL, configMAX_PRIORITIES - 1, NULL);
 }

@@ -26,7 +26,10 @@
     "_default_types.h": "c",
     "atomic": "c",
     "gpio.h": "c",
-    "esp_rom_sys.h": "c"
+    "esp_rom_sys.h": "c",
+    "string.h": "c",
+    "_locale.h": "c",
+    "regex": "c"
   },
   "idf.flashType": "UART"
 }

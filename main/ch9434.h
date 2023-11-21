@@ -20,6 +20,7 @@
 #define PIN_NUM_CLK GPIO_NUM_12
 #define PIN_NUM_CS GPIO_NUM_11
 #define CH9434_RST GPIO_NUM_47
+#define CH9434_INT GPIO_NUM_21
 
 /* -----------------------------------------------------------------------------
  *                               macro definition
@@ -182,6 +183,21 @@
 /* GPIO output setting */
 #define CH9434_GPIO_SET 1
 #define CH9434_GPIO_RESET 0
+
+/* -----------------------------------------------------------------------------
+ *                      define CH9434 interface functions
+ * -----------------------------------------------------------------------------
+ */
+
+/*
+ * Function Name  : spi2_init
+ * Description    : 初始化spi2外设
+ * Input          : None
+ * Output         : None
+ * Return         : None
+ */
+void ch9434_spi2_init(void);
+uint8_t spi_read_ch9434_byte(uint8_t addr);
 
 /* -----------------------------------------------------------------------------
  *                                  api function

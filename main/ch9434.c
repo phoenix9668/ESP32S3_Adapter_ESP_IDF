@@ -8,11 +8,12 @@
 
 #include "ch9434.h"
 #include "esp_log.h"
+#include "string.h"
 
 /*
  * CH9434 SPI parameters definition
  */
-#define SPI_CLK_FREQ (1 * 1000 * 1000) // When powered by 3.3V, EEPROM max freq is 1MHz
+#define SPI_CLK_FREQ (1 * 1000 * 1000)
 static const char *TAG = "CH9434_SPI";
 spi_device_handle_t spi2;
 
@@ -29,44 +30,7 @@ uint32_t ch9434_gpio_x_val = 0;
  * -----------------------------------------------------------------------------
  */
 
-/*
- * Function Name  : spi2_init
- * Description    : 初始化spi2外设
- * Input          : None
- * Output         : None
- * Return         : None
- */
-void spi2_init(void)
-{
-    static const char *TAG = "SPI2_INIT";
-    esp_err_t ret;
-    ESP_LOGI(TAG, "Initializing bus SPI%d...", CH9434_HOST + 1);
-    spi_bus_config_t buscfg = {
-        .miso_io_num = PIN_NUM_MISO,
-        .mosi_io_num = PIN_NUM_MOSI,
-        .sclk_io_num = PIN_NUM_CLK,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
-        .max_transfer_sz = 32,
-    };
-    // Initialize the SPI bus
-    ret = spi_bus_initialize(CH9434_HOST, &buscfg, SPI_DMA_CH_AUTO);
-    ESP_ERROR_CHECK(ret);
-
-    spi_device_interface_config_t devcfg = {
-        .clock_speed_hz = SPI_CLK_FREQ, // 1 MHz
-        .mode = 0,                      // SPI mode 0
-        .spics_io_num = PIN_NUM_CS,
-        .queue_size = 1,
-        // .flags = SPI_DEVICE_HALFDUPLEX,
-        .pre_cb = NULL,
-        .post_cb = NULL,
-    };
-
-    ESP_ERROR_CHECK(spi_bus_add_device(CH9434_HOST, &devcfg, &spi2));
-}
-
-void ch9434_rst_init(void)
+static void ch9434_rst_gpio_init(void)
 {
     gpio_config_t gpio_conf;
     gpio_conf.mode = GPIO_MODE_OUTPUT;
@@ -79,19 +43,151 @@ void ch9434_rst_init(void)
     gpio_set_level(CH9434_RST, 1);
 }
 
+static void ch9434_cs_gpio_init(void)
+{
+    gpio_config_t gpio_conf;
+    gpio_conf.mode = GPIO_MODE_OUTPUT;
+    gpio_conf.pin_bit_mask = (1ULL << PIN_NUM_CS);
+    gpio_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    gpio_conf.intr_type = GPIO_INTR_DISABLE;
+    gpio_config(&gpio_conf);
+
+    gpio_set_level(PIN_NUM_CS, 1);
+}
+
+static void ch9434_int_gpio_init(void)
+{
+    gpio_config_t gpio_conf;
+    gpio_conf.mode = GPIO_MODE_INPUT;
+    gpio_conf.pin_bit_mask = (1ULL << CH9434_INT);
+    gpio_conf.pull_up_en = GPIO_PULLDOWN_DISABLE;
+    gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    gpio_conf.intr_type = GPIO_INTR_DISABLE;
+    gpio_config(&gpio_conf);
+}
+
+/*
+ * Function Name  : spi2_init
+ * Description    : 初始化spi2外设
+ * Input          : None
+ * Output         : None
+ * Return         : None
+ */
+void ch9434_spi2_init(void)
+{
+    esp_err_t ret;
+    ESP_LOGI(TAG, "Initializing bus SPI%d...", CH9434_HOST + 1);
+    spi_bus_config_t buscfg = {
+        .miso_io_num = PIN_NUM_MISO,
+        .mosi_io_num = PIN_NUM_MOSI,
+        .sclk_io_num = PIN_NUM_CLK,
+        .quadwp_io_num = -1,
+        .quadhd_io_num = -1,
+        .max_transfer_sz = 1024,
+    };
+    // Initialize the SPI bus
+    ret = spi_bus_initialize(CH9434_HOST, &buscfg, SPI_DMA_CH_AUTO);
+    ESP_ERROR_CHECK(ret);
+
+    spi_device_interface_config_t devcfg = {
+        .clock_speed_hz = SPI_CLK_FREQ, // 1 MHz
+        .mode = 0,                      // SPI mode 0
+        .spics_io_num = -1,
+        .queue_size = 1,
+        // .flags = SPI_DEVICE_HALFDUPLEX,
+        .pre_cb = NULL,
+        .post_cb = NULL};
+
+    ESP_ERROR_CHECK(spi_bus_add_device(CH9434_HOST, &devcfg, &spi2));
+
+    ch9434_cs_gpio_init();
+    ch9434_rst_gpio_init();
+    ch9434_int_gpio_init();
+}
+
+static void cs_high(void)
+{
+    gpio_set_level(PIN_NUM_CS, 1);
+}
+
+static void cs_low(void)
+{
+    gpio_set_level(PIN_NUM_CS, 0);
+}
+
 void CH9434_US_DELAY(void)
 {
     esp_rom_delay_us(1);
 }
 
-/* SPI exchange one byte interface */
-// uint8_t CH9434_SPI_WRITE_BYTE(uint8_t dat)
-// {
-//     SPI_I2S_SendData(SPI1, (uint16_t)dat);
-//     while (SPI_I2S_GetFlagStatus(SPI1, SPI_I2S_FLAG_TXE) == RESET)
-//         ;
-//     return ((uint8_t)SPI_I2S_ReceiveData(SPI1));
-// }
+/* SPI SCS pin control, 0:low level  1:high level */
+void CH9434_SPI_SCS_OP(uint8_t byte)
+{
+    if (byte)
+        cs_high(); // SCS high
+    else
+        cs_low(); // SCS low
+}
+
+esp_err_t spi_write(uint8_t *data, uint8_t len)
+{
+    esp_err_t ret;
+    spi_transaction_t t;
+    if (len == 0)
+        return ESP_FAIL;      // no need to send anything
+    memset(&t, 0, sizeof(t)); // Zero out the transaction
+
+    cs_low();
+    t.length = len * 8;                          // Len is in bytes, transaction length is in bits.
+    t.tx_buffer = data;                          // Data
+    t.user = (void *)1;                          // D/C needs to be set to 1
+    ret = spi_device_polling_transmit(spi2, &t); // Transmit!
+    assert(ret == ESP_OK);                       // Should have had no issues.
+    cs_high();
+
+    return ret;
+}
+
+esp_err_t spi_read(uint8_t *data)
+{
+    spi_transaction_t t;
+    cs_low();
+    memset(&t, 0, sizeof(t));
+    t.length = 8;
+    t.flags = SPI_TRANS_USE_RXDATA;
+    t.user = (void *)1;
+    esp_err_t ret = spi_device_polling_transmit(spi2, &t);
+    assert(ret == ESP_OK);
+    *data = t.rx_data[0];
+    cs_high();
+
+    return ret;
+}
+
+uint8_t CH9434_SPI_WRITE_BYTE(uint8_t byte)
+{
+    spi_transaction_t t;
+    memset(&t, 0, sizeof(t)); // Zero out the transaction
+    t.length = 8;
+    t.tx_buffer = &byte; // Data
+    t.flags = SPI_TRANS_USE_RXDATA;
+    t.user = (void *)1;                                     // D/C needs to be set to 1
+    ESP_ERROR_CHECK(spi_device_polling_transmit(spi2, &t)); // Transmit!
+
+    return t.rx_data[0];
+}
+
+uint8_t spi_read_ch9434_byte(uint8_t addr)
+{
+    uint8_t d;
+    CH9434_SPI_SCS_OP(CH9434_DISABLE);
+    CH9434_SPI_WRITE_BYTE(addr | CH9434_REG_OP_READ);
+    CH9434_US_DELAY();
+    d = CH9434_SPI_WRITE_BYTE(0xFF);
+    CH9434_SPI_SCS_OP(CH9434_ENABLE);
+    return d;
+}
 
 /* -----------------------------------------------------------------------------
  *                                  api function
@@ -176,6 +272,7 @@ void CH9434InitClkMode(uint8_t xt_en, uint8_t freq_mul_en, uint8_t div_num)
     CH9434_SPI_SCS_OP(CH9434_ENABLE);
     for (i = 0; i < 50000; i++)
         CH9434_US_DELAY();
+    ESP_LOGI(TAG, "CLK_CTRL = %02X", spi_read_ch9434_byte(CH9434_CLK_CTRL_CFG_ADD));
 }
 
 /*
@@ -196,15 +293,11 @@ void CH9434UARTxParaSet(uint8_t uart_idx, uint32_t bps, uint8_t data_bits, uint8
     uint32_t x;
     uint8_t uart_reg_lcr;
 
-    //    printf("sys_frequency = %lu\n", sys_frequency);
     x = 10 * sys_frequency / 8 / bps;
     x = (x + 5) / 10;
-    //    printf("x = %lu\n", x);
 
     uart_reg_dll = x & 0xff;
     uart_reg_dlm = (x >> 8) & 0xff;
-    //    printf("uart_reg_dll = %02x\n", uart_reg_dll);
-    //    printf("uart_reg_dlm = %02x\n", uart_reg_dlm);
 
     CH9434_SPI_SCS_OP(CH9434_DISABLE);
     CH9434_SPI_WRITE_BYTE(CH9434_REG_OP_READ | (CH9434_UARTx_LCR_ADD + 0x10 * uart_idx));
@@ -214,7 +307,8 @@ void CH9434UARTxParaSet(uint8_t uart_idx, uint32_t bps, uint8_t data_bits, uint8
     uart_reg_lcr = CH9434_SPI_WRITE_BYTE(0xff);
     CH9434_US_DELAY();
     CH9434_SPI_SCS_OP(CH9434_ENABLE);
-    printf("LCR 1 = %02X\n", uart_reg_lcr);
+
+    ESP_LOGI(TAG, "LCR 1 = %02X", uart_reg_lcr);
 
     uart_reg_lcr |= CH9434_UARTx_BIT_DLAB;
 
@@ -236,7 +330,8 @@ void CH9434UARTxParaSet(uint8_t uart_idx, uint32_t bps, uint8_t data_bits, uint8
         uart_reg_lcr |= 0x03;
         break;
     }
-    printf("LCR 2 = %02X\n", uart_reg_lcr);
+
+    ESP_LOGI(TAG, "LCR 2 = %02X", uart_reg_lcr);
 
     uart_reg_lcr &= ~(1 << 2);
     if (stop_bits == CH9434_UART_TWO_STOP_BITS)
@@ -268,7 +363,7 @@ void CH9434UARTxParaSet(uint8_t uart_idx, uint32_t bps, uint8_t data_bits, uint8
     default:
         break;
     }
-    printf("LCR 3 = %02X\n", uart_reg_lcr);
+    ESP_LOGI(TAG, "LCR 3 = %02X", uart_reg_lcr);
 
     CH9434_SPI_SCS_OP(CH9434_DISABLE);
     CH9434_SPI_WRITE_BYTE(CH9434_REG_OP_WRITE | (CH9434_UARTx_LCR_ADD + 0x10 * uart_idx));
@@ -279,7 +374,7 @@ void CH9434UARTxParaSet(uint8_t uart_idx, uint32_t bps, uint8_t data_bits, uint8
     CH9434_US_DELAY();
     CH9434_SPI_SCS_OP(CH9434_ENABLE);
 
-    printf("LCR_ADD 1 = %02X\n", SPI_Read_CH9434_Byte(CH9434_UARTx_LCR_ADD + 0x10 * uart_idx));
+    ESP_LOGI(TAG, "LCR_ADD 1 = %02X", spi_read_ch9434_byte(CH9434_UARTx_LCR_ADD + 0x10 * uart_idx));
 
     CH9434_SPI_SCS_OP(CH9434_DISABLE);
     CH9434_SPI_WRITE_BYTE(CH9434_REG_OP_WRITE | (CH9434_UARTx_DLL_ADD + 0x10 * uart_idx));
@@ -290,7 +385,7 @@ void CH9434UARTxParaSet(uint8_t uart_idx, uint32_t bps, uint8_t data_bits, uint8
     CH9434_US_DELAY();
     CH9434_SPI_SCS_OP(CH9434_ENABLE);
 
-    printf("DLL_ADD = %02X\n", SPI_Read_CH9434_Byte(CH9434_UARTx_DLL_ADD + 0x10 * uart_idx));
+    ESP_LOGI(TAG, "DLL_ADD = %02X", spi_read_ch9434_byte(CH9434_UARTx_DLL_ADD + 0x10 * uart_idx));
 
     CH9434_SPI_SCS_OP(CH9434_DISABLE);
     CH9434_SPI_WRITE_BYTE(CH9434_REG_OP_WRITE | (CH9434_UARTx_DLM_ADD + 0x10 * uart_idx));
@@ -301,7 +396,7 @@ void CH9434UARTxParaSet(uint8_t uart_idx, uint32_t bps, uint8_t data_bits, uint8
     CH9434_US_DELAY();
     CH9434_SPI_SCS_OP(CH9434_ENABLE);
 
-    printf("DLM_ADD = %02X\n", SPI_Read_CH9434_Byte(CH9434_UARTx_DLM_ADD + 0x10 * uart_idx));
+    ESP_LOGI(TAG, "DLM_ADD = %02X", spi_read_ch9434_byte(CH9434_UARTx_DLM_ADD + 0x10 * uart_idx));
 
     uart_reg_lcr &= ~CH9434_UARTx_BIT_DLAB;
 
@@ -314,7 +409,7 @@ void CH9434UARTxParaSet(uint8_t uart_idx, uint32_t bps, uint8_t data_bits, uint8
     CH9434_US_DELAY();
     CH9434_SPI_SCS_OP(CH9434_ENABLE);
 
-    printf("LCR_ADD 2 = %02X\n", SPI_Read_CH9434_Byte(CH9434_UARTx_LCR_ADD + 0x10 * uart_idx));
+    ESP_LOGI(TAG, "LCR_ADD 2 = %02X", spi_read_ch9434_byte(CH9434_UARTx_LCR_ADD + 0x10 * uart_idx));
 }
 
 /*
@@ -338,16 +433,18 @@ void CH9434UARTxFIFOSet(uint8_t uart_idx, uint8_t fifo_en, uint8_t fifo_level)
         uart_reg_fcr |= fifo_level << 6;
     }
 
+    ESP_LOGI(TAG, "uart_reg_fcr = %02X", uart_reg_fcr);
+
     CH9434_SPI_SCS_OP(CH9434_DISABLE);
     CH9434_SPI_WRITE_BYTE(CH9434_REG_OP_WRITE | (CH9434_UARTx_FCR_ADD + 0x10 * uart_idx));
     CH9434_US_DELAY();
     CH9434_SPI_WRITE_BYTE(uart_reg_fcr);
     CH9434_US_DELAY();
-    CH9434_US_DELAY();
-    CH9434_US_DELAY();
     CH9434_SPI_SCS_OP(CH9434_ENABLE);
+    CH9434_US_DELAY();
+    CH9434_US_DELAY();
 
-    printf("FCR_ADD = %02X\n", SPI_Read_CH9434_Byte(CH9434_UARTx_FCR_ADD + 0x10 * uart_idx));
+    ESP_LOGI(TAG, "FCR_ADD = %02X", spi_read_ch9434_byte(CH9434_UARTx_FCR_ADD + 0x10 * uart_idx));
 }
 
 /*
@@ -384,7 +481,7 @@ void CH9434UARTxIrqSet(uint8_t uart_idx, uint8_t modem, uint8_t line, uint8_t tx
     CH9434_US_DELAY();
     CH9434_SPI_SCS_OP(CH9434_ENABLE);
 
-    printf("IER_ADD = %02X\n", SPI_Read_CH9434_Byte(CH9434_UARTx_IER_ADD + 0x10 * uart_idx));
+    ESP_LOGI(TAG, "IER_ADD = %02X", spi_read_ch9434_byte(CH9434_UARTx_IER_ADD + 0x10 * uart_idx));
 }
 
 /*
@@ -408,13 +505,13 @@ void CH9434UARTxFlowSet(uint8_t uart_idx, uint8_t flow_en)
     CH9434_US_DELAY();
     CH9434_SPI_SCS_OP(CH9434_ENABLE);
 
-    printf("uart_reg_mcr 1 = %02X\n", uart_reg_mcr);
+    ESP_LOGI(TAG, "uart_reg_mcr 1 = %02X", uart_reg_mcr);
 
     uart_reg_mcr &= ~(1 << 5);
     if (flow_en)
         uart_reg_mcr |= (1 << 5);
 
-    printf("uart_reg_mcr 2 = %02X\n", uart_reg_mcr);
+    ESP_LOGI(TAG, "uart_reg_mcr 2 = %02X", uart_reg_mcr);
 
     CH9434_SPI_SCS_OP(CH9434_DISABLE);
     CH9434_SPI_WRITE_BYTE(CH9434_REG_OP_WRITE | (CH9434_UARTx_MCR_ADD + 0x10 * uart_idx));
@@ -425,7 +522,7 @@ void CH9434UARTxFlowSet(uint8_t uart_idx, uint8_t flow_en)
     CH9434_US_DELAY();
     CH9434_SPI_SCS_OP(CH9434_ENABLE);
 
-    printf("MCR_ADD = %02X\n", SPI_Read_CH9434_Byte(CH9434_UARTx_MCR_ADD + 0x10 * uart_idx));
+    ESP_LOGI(TAG, "MCR_ADD = %02X", spi_read_ch9434_byte(CH9434_UARTx_MCR_ADD + 0x10 * uart_idx));
 }
 
 /*
@@ -448,11 +545,11 @@ void CH9434UARTxIrqOpen(uint8_t uart_idx)
     CH9434_US_DELAY();
     CH9434_SPI_SCS_OP(CH9434_ENABLE);
 
-    printf("uart_reg_mcr 1 = %02X\n", uart_reg_mcr);
+    ESP_LOGI(TAG, "uart_reg_mcr 1 = %02X", uart_reg_mcr);
 
     uart_reg_mcr |= (1 << 3);
 
-    printf("uart_reg_mcr 2 = %02X\n", uart_reg_mcr);
+    ESP_LOGI(TAG, "uart_reg_mcr 2 = %02X", uart_reg_mcr);
 
     CH9434_SPI_SCS_OP(CH9434_DISABLE);
     CH9434_SPI_WRITE_BYTE(CH9434_REG_OP_WRITE | (CH9434_UARTx_MCR_ADD + 0x10 * uart_idx));
@@ -463,7 +560,7 @@ void CH9434UARTxIrqOpen(uint8_t uart_idx)
     CH9434_US_DELAY();
     CH9434_SPI_SCS_OP(CH9434_ENABLE);
 
-    printf("MCR_ADD = %02X\n", SPI_Read_CH9434_Byte(CH9434_UARTx_MCR_ADD + 0x10 * uart_idx));
+    ESP_LOGI(TAG, "MCR_ADD = %02X", spi_read_ch9434_byte(CH9434_UARTx_MCR_ADD + 0x10 * uart_idx));
 }
 
 /*
@@ -488,7 +585,7 @@ void CH9434UARTxRtsDtrPin(uint8_t uart_idx, uint8_t rts_val, uint8_t dtr_val)
     CH9434_US_DELAY();
     CH9434_SPI_SCS_OP(CH9434_ENABLE);
 
-    printf("uart_reg_mcr 1 = %02X\n", uart_reg_mcr);
+    ESP_LOGI(TAG, "uart_reg_mcr 1 = %02X", uart_reg_mcr);
 
     if (rts_val)
         uart_reg_mcr |= (1 << 1);
@@ -499,7 +596,7 @@ void CH9434UARTxRtsDtrPin(uint8_t uart_idx, uint8_t rts_val, uint8_t dtr_val)
     else
         uart_reg_mcr &= ~(1 << 0);
 
-    printf("uart_reg_mcr 2 = %02X\n", uart_reg_mcr);
+    ESP_LOGI(TAG, "uart_reg_mcr 2 = %02X", uart_reg_mcr);
 
     CH9434_SPI_SCS_OP(CH9434_DISABLE);
     CH9434_SPI_WRITE_BYTE(CH9434_REG_OP_WRITE | (CH9434_UARTx_MCR_ADD + 0x10 * uart_idx));
@@ -510,7 +607,7 @@ void CH9434UARTxRtsDtrPin(uint8_t uart_idx, uint8_t rts_val, uint8_t dtr_val)
     CH9434_US_DELAY();
     CH9434_SPI_SCS_OP(CH9434_ENABLE);
 
-    printf("MCR_ADD = %02X\n", SPI_Read_CH9434_Byte(CH9434_UARTx_MCR_ADD + 0x10 * uart_idx));
+    ESP_LOGI(TAG, "MCR_ADD = %02X", spi_read_ch9434_byte(CH9434_UARTx_MCR_ADD + 0x10 * uart_idx));
 }
 
 /*
