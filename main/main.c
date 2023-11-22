@@ -258,87 +258,14 @@ static void ch9434_task(void *arg)
                       CH9434_ENABLE, // enable frequency doubling
                       13);           // Frequency division coefficient
     vTaskDelay(50 / portTICK_PERIOD_MS);
-    /* init uart */
-    uint32_t test_bps = 115200;
     // init uart0
-    CH9434UARTxParaSet(CH9434_UART_IDX_0, test_bps,
-                       CH9434_UART_8_BITS_PER_CHAR,
-                       CH9434_UART_ONE_STOP_BIT,
-                       CH9434_UART_NO_PARITY);
-    CH9434UARTxFIFOSet(CH9434_UART_IDX_0,
-                       CH9434_ENABLE,
-                       CH9434_UART_FIFO_MODE_1280);
-    CH9434UARTxFlowSet(CH9434_UART_IDX_0,
-                       CH9434_DISABLE);
-    CH9434UARTxIrqSet(CH9434_UART_IDX_0,
-                      CH9434_DISABLE, // modem signal interrupt
-                      CH9434_ENABLE,  // line status interrupt
-                      CH9434_ENABLE,  // send interrupt
-                      CH9434_ENABLE); // receive interrupt
-    CH9434UARTxIrqOpen(CH9434_UART_IDX_0);
-    CH9434UARTxRtsDtrPin(CH9434_UART_IDX_0,
-                         CH9434_DISABLE,  // RTS pin level status
-                         CH9434_DISABLE); // DTR pin level status
-
+    CH9434UARTxInit(CH9434_UART_IDX_0, UART_BPS);
     // init uart1
-    CH9434UARTxParaSet(CH9434_UART_IDX_1, test_bps,
-                       CH9434_UART_8_BITS_PER_CHAR,
-                       CH9434_UART_ONE_STOP_BIT,
-                       CH9434_UART_NO_PARITY);
-    CH9434UARTxFIFOSet(CH9434_UART_IDX_1,
-                       CH9434_ENABLE,
-                       CH9434_UART_FIFO_MODE_1280);
-    CH9434UARTxFlowSet(CH9434_UART_IDX_1,
-                       CH9434_DISABLE);
-    CH9434UARTxIrqSet(CH9434_UART_IDX_1,
-                      CH9434_DISABLE, // modem signal interrupt
-                      CH9434_ENABLE,  // line status interrupt
-                      CH9434_ENABLE,  // send interrupt
-                      CH9434_ENABLE); // receive interrupt
-    CH9434UARTxIrqOpen(CH9434_UART_IDX_1);
-    CH9434UARTxRtsDtrPin(CH9434_UART_IDX_1,
-                         CH9434_DISABLE,  // RTS pin level status
-                         CH9434_DISABLE); // DTR pin level status
-
+    CH9434UARTxInit(CH9434_UART_IDX_1, UART_BPS);
     // init uart2
-    CH9434UARTxParaSet(CH9434_UART_IDX_2, test_bps,
-                       CH9434_UART_8_BITS_PER_CHAR,
-                       CH9434_UART_ONE_STOP_BIT,
-                       CH9434_UART_NO_PARITY);
-    CH9434UARTxFIFOSet(CH9434_UART_IDX_2,
-                       CH9434_ENABLE,
-                       CH9434_UART_FIFO_MODE_1280);
-    CH9434UARTxFlowSet(CH9434_UART_IDX_2,
-                       CH9434_DISABLE);
-    CH9434UARTxIrqSet(CH9434_UART_IDX_2,
-                      CH9434_DISABLE, // modem signal interrupt
-                      CH9434_ENABLE,  // line status interrupt
-                      CH9434_ENABLE,  // send interrupt
-                      CH9434_ENABLE); // receive interrupt
-    CH9434UARTxIrqOpen(CH9434_UART_IDX_2);
-    CH9434UARTxRtsDtrPin(CH9434_UART_IDX_2,
-                         CH9434_DISABLE,  // RTS pin level status
-                         CH9434_DISABLE); // DTR pin level status
-
+    CH9434UARTxInit(CH9434_UART_IDX_2, UART_BPS);
     // init uart3
-    CH9434UARTxParaSet(CH9434_UART_IDX_3, test_bps,
-                       CH9434_UART_8_BITS_PER_CHAR,
-                       CH9434_UART_ONE_STOP_BIT,
-                       CH9434_UART_NO_PARITY);
-    CH9434UARTxFIFOSet(CH9434_UART_IDX_3,
-                       CH9434_ENABLE,
-                       CH9434_UART_FIFO_MODE_1280);
-    CH9434UARTxFlowSet(CH9434_UART_IDX_3,
-                       CH9434_DISABLE);
-    CH9434UARTxIrqSet(CH9434_UART_IDX_3,
-                      CH9434_DISABLE, // modem signal interrupt
-                      CH9434_ENABLE,  // line status interrupt
-                      CH9434_ENABLE,  // send interrupt
-                      CH9434_ENABLE); // receive interrupt
-    CH9434UARTxIrqOpen(CH9434_UART_IDX_3);
-    CH9434UARTxRtsDtrPin(CH9434_UART_IDX_3,
-                         CH9434_DISABLE,  // RTS pin level status
-                         CH9434_DISABLE); // DTR pin level status
+    CH9434UARTxInit(CH9434_UART_IDX_3, UART_BPS);
     while (1)
     {
         if (gpio_get_level(CH9434_INT) == 0) // INT level is low

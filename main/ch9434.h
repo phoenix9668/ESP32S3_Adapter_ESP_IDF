@@ -22,6 +22,8 @@
 #define CH9434_RST GPIO_NUM_47
 #define CH9434_INT GPIO_NUM_21
 
+#define UART_BPS 115200
+
 /* -----------------------------------------------------------------------------
  *                               macro definition
  * -----------------------------------------------------------------------------
@@ -197,7 +199,6 @@
  * Return         : None
  */
 void ch9434_spi2_init(void);
-uint8_t spi_read_ch9434_byte(uint8_t addr);
 
 /* -----------------------------------------------------------------------------
  *                                  api function
@@ -437,5 +438,11 @@ void CH9434GPIOPinOut(uint8_t gpio_idx, uint8_t out_val);
  * Return         : 电平状态：1：高电平 0：低电平
  */
 uint8_t CH9434GPIOPinVal(uint8_t gpio_idx);
+
+/* -----------------------------------------------------------------------------
+ *                                  init function
+ * -----------------------------------------------------------------------------
+ */
+void CH9434UARTxInit(uint8_t uart_idx, uint32_t bps);
 
 #endif /*__CH9434_H__ */

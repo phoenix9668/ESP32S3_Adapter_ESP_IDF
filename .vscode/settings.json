@@ -29,7 +29,9 @@
     "esp_rom_sys.h": "c",
     "string.h": "c",
     "_locale.h": "c",
-    "regex": "c"
+    "regex": "c",
+    "esp_log.h": "c",
+    "portmacro.h": "c"
   },
   "idf.flashType": "UART"
 }
