@@ -12,7 +12,7 @@
 #include "driver/gpio.h"
 
 /*
- * CH9434 SPI pins definition
+ * CH9434 pins definition
  */
 #define CH9434_HOST SPI2_HOST
 #define PIN_NUM_MISO GPIO_NUM_14
@@ -22,12 +22,12 @@
 #define CH9434_RST GPIO_NUM_47
 #define CH9434_INT GPIO_NUM_21
 
-#define UART_BPS 115200
-
 /* -----------------------------------------------------------------------------
  *                               macro definition
  * -----------------------------------------------------------------------------
  */
+#define UART_BPS 115200
+
 /* Enable bits */
 #define CH9434_ENABLE 1
 #define CH9434_DISABLE 0

@@ -31,7 +31,13 @@
     "_locale.h": "c",
     "regex": "c",
     "esp_log.h": "c",
-    "portmacro.h": "c"
+    "portmacro.h": "c",
+    "e34_2g4d20d.h": "c",
+    "future": "c",
+    "esp_system.h": "c",
+    "esp_bit_defs.h": "c",
+    "uart.h": "c",
+    "*.tcc": "c"
   },
   "idf.flashType": "UART"
 }

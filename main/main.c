@@ -4,48 +4,25 @@
 #include "esp_system.h"
 #include "esp_log.h"
 #include "esp_err.h"
-#include "driver/uart.h"
-#include "string.h"
+#include "esp_rom_sys.h"
 #include "driver/gpio.h"
 #include "freertos/portmacro.h"
 #include "driver/spi_master.h"
+#include "driver/uart.h"
 #include "ch9434.h"
-#include "esp_rom_sys.h"
+#include "e34_2g4d20d.h"
 
 /*
- * UART pins and parameters definition
+ * UART2 pins and parameters definition
  */
-static const int RX_BUF_SIZE = 1024;
-uint8_t result_data[100];
-int result_index;
-char read_parameter[4] = {0xC1, 0xC1, 0xC1, '\0'};
-char read_version[4] = {0xC3, 0xC3, 0xC3, '\0'};
-char reset_device[4] = {0xC4, 0xC4, 0xC4, '\0'};
-
-#define UART1_TXD_PIN (GPIO_NUM_6)
-#define UART1_RXD_PIN (GPIO_NUM_7)
 #define UART2_TXD_PIN (GPIO_NUM_48)
 #define UART2_RXD_PIN (GPIO_NUM_38)
-
-#define M0 (GPIO_NUM_5)
-#define M1 (GPIO_NUM_4)
-#define AUX (GPIO_NUM_15)
-
-#define ADDR1 (GPIO_NUM_42)
-#define ADDR2 (GPIO_NUM_41)
-#define ADDR3 (GPIO_NUM_40)
-#define ADDR4 (GPIO_NUM_39)
-
-typedef enum
-{
-    HALF_DUPLEX = 0,
-    FULL_DUPLEX = 1,
-    RESERVE = 2,
-    SET = 3
-} modes_t;
+uint8_t *from_table_data = NULL;
+int from_table_rxBytes;
+uint8_t *packet_to_android = NULL;
 
 /*
- * CH9434 SPI parameters definition
+ * CH9434 parameters definition
  */
 uint8_t uart_idx;
 uint8_t uart_iir;
@@ -56,6 +33,68 @@ uint16_t rec_buf_cnt = 0;
 uint8_t uart_rec_buf[512];
 
 uint32_t uart_rec_total_cnt[4] = {0, 0, 0, 0};
+
+/*
+ * business pins and parameters definition
+ */
+// 定义包头和地址
+#define PACKET_HEADER 0xE55E
+#define PACKET_TO_ANDROID_LENGTH 6
+uint8_t board_address = 0x00;
+
+#define ADDR1 (GPIO_NUM_42)
+#define ADDR2 (GPIO_NUM_41)
+#define ADDR3 (GPIO_NUM_40)
+#define ADDR4 (GPIO_NUM_39)
+
+// CRC32多项式
+#define CRC32_POLYNOMIAL 0xEDB88320L
+
+// 计算CRC32查找表
+uint32_t crc32_table[256];
+
+void generate_crc32_table()
+{
+    for (uint32_t i = 0; i < 256; ++i)
+    {
+        uint32_t crc = i;
+        for (int j = 0; j < 8; ++j)
+        {
+            crc = (crc >> 1) ^ ((crc & 1) ? CRC32_POLYNOMIAL : 0);
+        }
+        crc32_table[i] = crc;
+    }
+}
+
+// 计算CRC32
+uint32_t calculateCRC32(const uint8_t *data, size_t length)
+{
+    uint32_t crc = 0xFFFFFFFF;
+
+    for (size_t i = 0; i < length; ++i)
+    {
+        crc = (crc >> 8) ^ crc32_table[(crc & 0xFF) ^ data[i]];
+    }
+
+    return ~crc;
+}
+
+// get switch value on PCB
+void get_switch_value(void)
+{
+    static const char *SWITCH_TAG = "SWITCH";
+    esp_log_level_set(SWITCH_TAG, ESP_LOG_INFO);
+    gpio_config_t gpio_conf;
+    gpio_conf.mode = GPIO_MODE_INPUT;
+    gpio_conf.pin_bit_mask = (1ULL << ADDR1) | (1ULL << ADDR2) | (1ULL << ADDR3) | (1ULL << ADDR4);
+    gpio_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    gpio_conf.intr_type = GPIO_INTR_DISABLE;
+    gpio_config(&gpio_conf);
+
+    board_address = (gpio_get_level(ADDR4) << 3) | (gpio_get_level(ADDR3) << 2) | (gpio_get_level(ADDR2) << 1) | gpio_get_level(ADDR1);
+    ESP_LOGI(SWITCH_TAG, "board_address:%02x", board_address);
+}
 
 void uart2_init(void)
 {
@@ -95,137 +134,53 @@ static void tx_task(void *arg)
 static void rx_task(void *arg)
 {
     static const char *RX_TASK_TAG = "RX_TASK";
-    esp_log_level_set(RX_TASK_TAG, ESP_LOG_INFO);
-    uint8_t *data = (uint8_t *)malloc(RX_BUF_SIZE + 1);
+    esp_log_level_set(RX_TASK_TAG, ESP_LOG_DEBUG);
+    from_table_data = (uint8_t *)malloc(RX_BUF_SIZE + 1);
     while (1)
     {
-        const int rxBytes = uart_read_bytes(UART_NUM_2, data, RX_BUF_SIZE, 100 / portTICK_PERIOD_MS);
-        if (rxBytes > 0)
+        from_table_rxBytes = uart_read_bytes(UART_NUM_2, from_table_data, RX_BUF_SIZE, 100 / portTICK_PERIOD_MS);
+        if (from_table_rxBytes > 0)
         {
-            data[rxBytes] = 0;
-            // ESP_LOGI(RX_TASK_TAG, "Read %d bytes: '%s'", rxBytes, data);
-            // ESP_LOG_BUFFER_HEXDUMP(RX_TASK_TAG, data, rxBytes, ESP_LOG_INFO);
-
-            memset(result_data, 0, sizeof(result_data));
-            memset(&result_index, 0, sizeof(result_index));
-            // 查找第一个0x20
-            char *start_ptr = strchr((char *)data, 0x20);
-            if (start_ptr == NULL)
-            {
-                printf("No start byte (0x20) found.\n");
-            }
-
-            // 查找第一个0x0d，从第一个0x20开始搜索
-            char *end_ptr = strchr(start_ptr, 0x0d);
-            if (end_ptr == NULL)
-            {
-                printf("No end byte (0x0d) found.\n");
-            }
-
-            // 复制数据到结果数组
-            while (start_ptr != end_ptr)
-            {
-                result_data[result_index++] = *start_ptr++;
-            }
-
-            // 将提取的数据打印为字符串
-            result_data[result_index++] = 0x0d; // 添加字符串结束符
-            result_data[result_index] = '\0';   // 添加字符串结束符
-            printf("Extracted Data: %s\n", result_data);
-            ESP_LOG_BUFFER_HEXDUMP(RX_TASK_TAG, result_data, result_index, ESP_LOG_INFO);
+            from_table_data[from_table_rxBytes] = 0;
+            ESP_LOGD(RX_TASK_TAG, "Read %d bytes: '%s'", from_table_rxBytes, from_table_data);
+            ESP_LOG_BUFFER_HEXDUMP(RX_TASK_TAG, from_table_data, from_table_rxBytes, ESP_LOG_DEBUG);
         }
     }
-    free(data);
-}
-
-void uart1_init(void)
-{
-    const uart_config_t uart1_config = {
-        .baud_rate = 9600,
-        .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .source_clk = UART_SCLK_DEFAULT,
-    };
-    // We won't use a buffer for sending data.
-    uart_driver_install(UART_NUM_1, RX_BUF_SIZE * 2, 0, 0, NULL, 0);
-    uart_param_config(UART_NUM_1, &uart1_config);
-    uart_set_pin(UART_NUM_1, UART1_TXD_PIN, UART1_RXD_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-}
-
-void e34_2g4d20d_init(void)
-{
-    gpio_config_t gpio_conf;
-    gpio_conf.mode = GPIO_MODE_OUTPUT;
-    gpio_conf.pin_bit_mask = (1ULL << M0) | (1ULL << M1);
-    gpio_conf.pull_up_en = GPIO_PULLUP_DISABLE;
-    gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    gpio_conf.intr_type = GPIO_INTR_DISABLE;
-    gpio_config(&gpio_conf);
-
-    gpio_set_level(M0, 1);
-    gpio_set_level(M1, 0);
-}
-
-void e34_2g4d20d_model_sel(modes_t mode)
-{
-    if (mode == HALF_DUPLEX)
-    {
-        gpio_set_level(M0, 0);
-        gpio_set_level(M1, 0);
-    }
-    else if (mode == FULL_DUPLEX)
-    {
-        gpio_set_level(M0, 1);
-        gpio_set_level(M1, 0);
-    }
-    else if (mode == RESERVE)
-    {
-        gpio_set_level(M0, 0);
-        gpio_set_level(M1, 1);
-    }
-    else if (mode == SET)
-    {
-        gpio_set_level(M0, 1);
-        gpio_set_level(M1, 1);
-    }
-}
-
-// void e34_2g4d20d_parameter_set(char *read_parameter)
-// {
-//     char dev_head = 0xc0;
-//     char dev_addh = 0x00;
-//     char dev_addl = 0x00;
-//     char dev_sped = 0x18;
-//     char dev_chan = 0x00;
-//     char dev_option = 0x40;
-//     char *read_parameter = {dev_head, dev_addh, dev_addl, dev_sped, dev_chan, dev_option, '\0'};
-// }
-
-int e34_2g4d20d_sendData(const char *logName, const char *data, int len)
-{
-    // const int len = strlen(data);
-    const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
-    ESP_LOGI(logName, "Wrote %d bytes", txBytes);
-    ESP_LOG_BUFFER_HEXDUMP(logName, data, len, ESP_LOG_INFO);
-    return txBytes;
+    free(from_table_data);
 }
 
 static void e34_2g4d20d_tx_task(void *arg)
 {
     static const char *E34_2G4D20D_TX_TASK_TAG = "E34_2G4D20D_TX_TASK";
-    esp_log_level_set(E34_2G4D20D_TX_TASK_TAG, ESP_LOG_INFO);
-    e34_2g4d20d_model_sel(SET);
-    char set_para[7] = {0xC0, 0x00, 0x00, 0x18, 0x00, 0x40, '\0'};
-    e34_2g4d20d_sendData(E34_2G4D20D_TX_TASK_TAG, (char *)set_para, 6);
-    vTaskDelay(200 / portTICK_PERIOD_MS);
-    e34_2g4d20d_sendData(E34_2G4D20D_TX_TASK_TAG, read_parameter, 3);
-    vTaskDelay(1000 / portTICK_PERIOD_MS);
-    e34_2g4d20d_model_sel(FULL_DUPLEX);
+    esp_log_level_set(E34_2G4D20D_TX_TASK_TAG, ESP_LOG_DEBUG);
+    e34_2g4d20d_parameter_set(0xc0, 0x00, 0x00, 0x18, 0x00, 0x40);
+    // 在开头插入包头和地址
+    packet_to_android = (uint8_t *)malloc(RX_BUF_SIZE + 1);
+    uint32_t crc32_result;
     while (1)
     {
-        e34_2g4d20d_sendData(E34_2G4D20D_TX_TASK_TAG, (char *)result_data, result_index);
+        if (from_table_data[PACKET_TO_ANDROID_LENGTH - 1] == 0x0d)
+        {
+            packet_to_android[0] = (PACKET_HEADER >> 8) & 0xFF;
+            packet_to_android[1] = PACKET_HEADER & 0xFF;
+            packet_to_android[2] = 0x00;
+            packet_to_android[3] = board_address & 0xFF;
+            packet_to_android[4] = 0x05;
+            packet_to_android[5] = 0x05;
+            // 复制原始数据到新数组
+            for (int i = 0; i < PACKET_TO_ANDROID_LENGTH; ++i)
+            {
+                packet_to_android[i + 6] = from_table_data[i];
+            }
+
+            crc32_result = calculateCRC32(packet_to_android, PACKET_TO_ANDROID_LENGTH + 6);
+            // 计算并追加CRC校验码
+            packet_to_android[PACKET_TO_ANDROID_LENGTH + 6] = (crc32_result >> 24) & 0xFF;
+            packet_to_android[PACKET_TO_ANDROID_LENGTH + 7] = (crc32_result >> 16) & 0xFF;
+            packet_to_android[PACKET_TO_ANDROID_LENGTH + 8] = (crc32_result >> 8) & 0xFF;
+            packet_to_android[PACKET_TO_ANDROID_LENGTH + 9] = crc32_result & 0xFF;
+            e34_2g4d20d_sendData(E34_2G4D20D_TX_TASK_TAG, (char *)packet_to_android, PACKET_TO_ANDROID_LENGTH + 10);
+        }
         vTaskDelay(200 / portTICK_PERIOD_MS);
     }
 }
@@ -233,7 +188,7 @@ static void e34_2g4d20d_tx_task(void *arg)
 static void e34_2g4d20d_rx_task(void *arg)
 {
     static const char *E34_2G4D20D_RX_TASK_TAG = "E34_2G4D20D_RX_TASK";
-    esp_log_level_set(E34_2G4D20D_RX_TASK_TAG, ESP_LOG_INFO);
+    esp_log_level_set(E34_2G4D20D_RX_TASK_TAG, ESP_LOG_DEBUG);
     uint8_t *data = (uint8_t *)malloc(RX_BUF_SIZE + 1);
     while (1)
     {
@@ -241,8 +196,8 @@ static void e34_2g4d20d_rx_task(void *arg)
         if (rxBytes > 0)
         {
             data[rxBytes] = 0;
-            ESP_LOGI(E34_2G4D20D_RX_TASK_TAG, "Read %d bytes: '%s'", rxBytes, data);
-            ESP_LOG_BUFFER_HEXDUMP(E34_2G4D20D_RX_TASK_TAG, data, rxBytes, ESP_LOG_INFO);
+            ESP_LOGD(E34_2G4D20D_RX_TASK_TAG, "Read %d bytes: '%s'", rxBytes, data);
+            ESP_LOG_BUFFER_HEXDUMP(E34_2G4D20D_RX_TASK_TAG, data, rxBytes, ESP_LOG_DEBUG);
         }
     }
     free(data);
@@ -336,13 +291,15 @@ static void ch9434_task(void *arg)
 
 void app_main(void)
 {
-    uart1_init();
+    generate_crc32_table();
+    get_switch_value();
+    e34_2g4d20d_uart1_init();
+    e34_2g4d20d_gpio_init();
     uart2_init();
-    e34_2g4d20d_init();
     ch9434_spi2_init();
-    // xTaskCreate(rx_task, "uart_rx_task", 1024 * 8, NULL, configMAX_PRIORITIES, NULL);
-    xTaskCreate(tx_task, "uart_tx_task", 1024 * 8, NULL, configMAX_PRIORITIES - 1, NULL);
-    // xTaskCreate(e34_2g4d20d_rx_task, "e34_2g4d20d_rx_task", 1024 * 8, NULL, configMAX_PRIORITIES, NULL);
-    // xTaskCreate(e34_2g4d20d_tx_task, "e34_2g4d20d_tx_task", 1024 * 8, NULL, configMAX_PRIORITIES - 1, NULL);
-    xTaskCreate(ch9434_task, "ch9434_task", 1024 * 8, NULL, configMAX_PRIORITIES - 1, NULL);
+    xTaskCreate(rx_task, "uart_rx_task", 1024 * 8, NULL, configMAX_PRIORITIES, NULL);
+    xTaskCreate(tx_task, "uart_tx_task", 1024 * 8, NULL, configMAX_PRIORITIES - 3, NULL);
+    xTaskCreate(e34_2g4d20d_rx_task, "e34_2g4d20d_rx_task", 1024 * 8, NULL, configMAX_PRIORITIES, NULL);
+    xTaskCreate(e34_2g4d20d_tx_task, "e34_2g4d20d_tx_task", 1024 * 8, NULL, configMAX_PRIORITIES - 1, NULL);
+    xTaskCreate(ch9434_task, "ch9434_task", 1024 * 8, NULL, configMAX_PRIORITIES - 2, NULL);
 }
