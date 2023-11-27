@@ -26,7 +26,7 @@
  *                               macro definition
  * -----------------------------------------------------------------------------
  */
-#define UART_BPS 115200
+#define UART_BPS 57600
 
 /* Enable bits */
 #define CH9434_ENABLE 1
