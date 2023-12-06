@@ -59,8 +59,8 @@ int e34_2g4d20d_sendData(const char *logName, const char *data, int len)
 {
     // const int len = strlen(data);
     const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
-    ESP_LOGI(logName, "Wrote %d bytes", txBytes);
-    ESP_LOG_BUFFER_HEXDUMP(logName, data, len, ESP_LOG_INFO);
+    ESP_LOGD(logName, "Wrote %d bytes", txBytes);
+    ESP_LOG_BUFFER_HEXDUMP(logName, data, len, ESP_LOG_DEBUG);
     return txBytes;
 }
 

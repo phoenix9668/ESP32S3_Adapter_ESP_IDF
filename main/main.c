@@ -1,6 +1,7 @@
 #include <string.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "esp_system.h"
 #include "esp_log.h"
 #include "esp_err.h"
@@ -43,6 +44,7 @@ uint8_t ch9434_init_end = 0;
 #define PACKET_HEADER 0xE55E
 #define PACKET_TO_ANDROID_LENGTH 6
 uint8_t board_address = 0x00;
+SemaphoreHandle_t mutex;
 
 #define ADDR1 (GPIO_NUM_42)
 #define ADDR2 (GPIO_NUM_41)
@@ -140,12 +142,13 @@ static void rx_task(void *arg)
     from_table_data = (uint8_t *)malloc(RX_BUF_SIZE + 1);
     while (1)
     {
-        from_table_rxBytes = uart_read_bytes(UART_NUM_2, from_table_data, RX_BUF_SIZE, 100 / portTICK_PERIOD_MS);
+        from_table_rxBytes = uart_read_bytes(UART_NUM_2, from_table_data, RX_BUF_SIZE, 200 / portTICK_PERIOD_MS);
         if (from_table_rxBytes > 0)
         {
             from_table_data[from_table_rxBytes] = 0;
             ESP_LOGD(RX_TASK_TAG, "Read %d bytes: '%s'", from_table_rxBytes, from_table_data);
             ESP_LOG_BUFFER_HEXDUMP(RX_TASK_TAG, from_table_data, from_table_rxBytes, ESP_LOG_DEBUG);
+            memset(from_table_data, 0, RX_BUF_SIZE);
         }
     }
     free(from_table_data);
@@ -154,7 +157,7 @@ static void rx_task(void *arg)
 static void e34_2g4d20d_tx_task(void *arg)
 {
     static const char *E34_2G4D20D_TX_TASK_TAG = "E34_2G4D20D_TX_TASK";
-    esp_log_level_set(E34_2G4D20D_TX_TASK_TAG, ESP_LOG_INFO);
+    esp_log_level_set(E34_2G4D20D_TX_TASK_TAG, ESP_LOG_DEBUG);
     e34_2g4d20d_parameter_set(0xc0, 0x00, 0x00, 0x18, 0x00, 0x40);
     // 在开头插入包头和地址
     packet_to_android = (uint8_t *)malloc(RX_BUF_SIZE + 1);
@@ -181,7 +184,12 @@ static void e34_2g4d20d_tx_task(void *arg)
             packet_to_android[PACKET_TO_ANDROID_LENGTH + 7] = (crc32_result >> 16) & 0xFF;
             packet_to_android[PACKET_TO_ANDROID_LENGTH + 8] = (crc32_result >> 8) & 0xFF;
             packet_to_android[PACKET_TO_ANDROID_LENGTH + 9] = crc32_result & 0xFF;
-            e34_2g4d20d_sendData(E34_2G4D20D_TX_TASK_TAG, (char *)packet_to_android, PACKET_TO_ANDROID_LENGTH + 10);
+            if (xSemaphoreTake(mutex, portMAX_DELAY))
+            {
+                e34_2g4d20d_sendData(E34_2G4D20D_TX_TASK_TAG, (char *)packet_to_android, PACKET_TO_ANDROID_LENGTH + 10);
+                vTaskDelay(10 / portTICK_PERIOD_MS);
+                xSemaphoreGive(mutex);
+            }
         }
         vTaskDelay(200 / portTICK_PERIOD_MS);
     }
@@ -190,24 +198,18 @@ static void e34_2g4d20d_tx_task(void *arg)
 static void e34_2g4d20d_rx_task(void *arg)
 {
     static const char *E34_2G4D20D_RX_TASK_TAG = "E34_2G4D20D_RX_TASK";
-    esp_log_level_set(E34_2G4D20D_RX_TASK_TAG, ESP_LOG_INFO);
+    esp_log_level_set(E34_2G4D20D_RX_TASK_TAG, ESP_LOG_DEBUG);
     uint8_t *data = (uint8_t *)malloc(RX_BUF_SIZE + 1);
     uint8_t rfid_one_shot[5] = {0x04, 0xFF, 0x01, 0x1B, 0xB4};
     uint32_t crc32_result;
     while (1)
     {
-        // vTaskDelay(2000 / portTICK_PERIOD_MS);
-        // if (ch9434_init_end)
-        // {
-        //     CH9434UARTxSetTxFIFOData(0, rfid_one_shot, sizeof(rfid_one_shot));
-        // }
-
-        const int rxBytes = uart_read_bytes(UART_NUM_1, data, RX_BUF_SIZE, 100 / portTICK_PERIOD_MS);
+        const int rxBytes = uart_read_bytes(UART_NUM_1, data, RX_BUF_SIZE, 200 / portTICK_PERIOD_MS);
         if (rxBytes > 0)
         {
             data[rxBytes] = 0;
-            ESP_LOGI(E34_2G4D20D_RX_TASK_TAG, "Read %d bytes: '%s'", rxBytes, data);
-            ESP_LOG_BUFFER_HEXDUMP(E34_2G4D20D_RX_TASK_TAG, data, rxBytes, ESP_LOG_INFO);
+            ESP_LOGD(E34_2G4D20D_RX_TASK_TAG, "Read %d bytes: '%s'", rxBytes, data);
+            ESP_LOG_BUFFER_HEXDUMP(E34_2G4D20D_RX_TASK_TAG, data, rxBytes, ESP_LOG_DEBUG);
             if (ch9434_init_end)
             {
                 crc32_result = calculateCRC32(data, rxBytes - 4);
@@ -232,8 +234,8 @@ static void e34_2g4d20d_rx_task(void *arg)
 static void ch9434_task(void *arg)
 {
     static const char *CH9434_TASK_TAG = "CH9434_TASK";
-    esp_log_level_set(CH9434_TASK_TAG, ESP_LOG_INFO);
-    ESP_LOGI(CH9434_TASK_TAG, "** CH9434 hardware test demo. ** \n");
+    esp_log_level_set(CH9434_TASK_TAG, ESP_LOG_DEBUG);
+    ESP_LOGD(CH9434_TASK_TAG, "** CH9434 hardware test demo. ** \n");
     /* init CH9434 */
     CH9434InitClkMode(CH9434_ENABLE, // extern Crystal oscillator
                       CH9434_ENABLE, // enable frequency doubling
@@ -258,7 +260,7 @@ static void ch9434_task(void *arg)
             for (uart_idx = 0; uart_idx < 4; uart_idx++)
             {
                 uart_iir = CH9434UARTxReadIIR(uart_idx);
-                ESP_LOGI(CH9434_TASK_TAG, "idx:%d uart_iir:%02x", uart_idx, uart_iir);
+                ESP_LOGD(CH9434_TASK_TAG, "idx:%d uart_iir:%02x", uart_idx, uart_iir);
                 switch (uart_iir & 0x0f)
                 {
                 case 0x01: // no interrupt
@@ -266,34 +268,41 @@ static void ch9434_task(void *arg)
                 case 0x06: // receive line status
                 {
                     uart_lsr = CH9434UARTxReadLSR(uart_idx);
-                    ESP_LOGI(CH9434_TASK_TAG, "uart_lsr:%02x", uart_lsr);
+                    ESP_LOGD(CH9434_TASK_TAG, "uart_lsr:%02x", uart_lsr);
                     rec_buf_cnt = CH9434UARTxGetRxFIFOLen(uart_idx);
                     if (rec_buf_cnt)
                     {
                         CH9434UARTxGetRxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
                         uart_rec_total_cnt[uart_idx] += rec_buf_cnt;
-                        ESP_LOGI(CH9434_TASK_TAG, "idx:%d rec:%d total:%d", uart_idx, rec_buf_cnt,
+                        ESP_LOGD(CH9434_TASK_TAG, "idx:%d rec:%d total:%d", uart_idx, rec_buf_cnt,
                                  (int)uart_rec_total_cnt[uart_idx]);
                         // CH9434UARTxSetTxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
-                        packet_to_android[0] = (PACKET_HEADER >> 8) & 0xFF;
-                        packet_to_android[1] = PACKET_HEADER & 0xFF;
-                        packet_to_android[2] = 0x00;
-                        packet_to_android[3] = board_address & 0xFF;
-                        packet_to_android[4] = 0x00;
-                        packet_to_android[5] = 0x02; // 称重数据为01，RFID数据为02
-                        // 复制原始数据到新数组
-                        for (int i = 0; i < rec_buf_cnt; ++i)
+                        if (rec_buf_cnt >= 20)
                         {
-                            packet_to_android[i + 6] = uart_rec_buf[i];
-                        }
+                            packet_to_android[0] = (PACKET_HEADER >> 8) & 0xFF;
+                            packet_to_android[1] = PACKET_HEADER & 0xFF;
+                            packet_to_android[2] = 0x00;
+                            packet_to_android[3] = board_address & 0xFF;
+                            packet_to_android[4] = 0x00;
+                            packet_to_android[5] = 0x02; // 称重数据为01，RFID数据为02
+                            // 复制原始数据到新数组
+                            for (int i = 0; i < rec_buf_cnt; ++i)
+                            {
+                                packet_to_android[i + 6] = uart_rec_buf[i];
+                            }
 
-                        crc32_result = calculateCRC32(packet_to_android, rec_buf_cnt + 6);
-                        // 计算并追加CRC校验码
-                        packet_to_android[rec_buf_cnt + 6] = (crc32_result >> 24) & 0xFF;
-                        packet_to_android[rec_buf_cnt + 7] = (crc32_result >> 16) & 0xFF;
-                        packet_to_android[rec_buf_cnt + 8] = (crc32_result >> 8) & 0xFF;
-                        packet_to_android[rec_buf_cnt + 9] = crc32_result & 0xFF;
-                        e34_2g4d20d_sendData(CH9434_TASK_TAG, (char *)packet_to_android, rec_buf_cnt + 10);
+                            crc32_result = calculateCRC32(packet_to_android, rec_buf_cnt + 6);
+                            // 计算并追加CRC校验码
+                            packet_to_android[rec_buf_cnt + 6] = (crc32_result >> 24) & 0xFF;
+                            packet_to_android[rec_buf_cnt + 7] = (crc32_result >> 16) & 0xFF;
+                            packet_to_android[rec_buf_cnt + 8] = (crc32_result >> 8) & 0xFF;
+                            packet_to_android[rec_buf_cnt + 9] = crc32_result & 0xFF;
+                            if (xSemaphoreTake(mutex, portMAX_DELAY))
+                            {
+                                e34_2g4d20d_sendData(CH9434_TASK_TAG, (char *)packet_to_android, rec_buf_cnt + 10);
+                                xSemaphoreGive(mutex);
+                            }
+                        }
                     }
                     break;
                 }
@@ -304,28 +313,35 @@ static void ch9434_task(void *arg)
                     {
                         CH9434UARTxGetRxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
                         uart_rec_total_cnt[uart_idx] += rec_buf_cnt;
-                        ESP_LOGI(CH9434_TASK_TAG, "idx:%d rec:%d total:%d", uart_idx, rec_buf_cnt,
+                        ESP_LOGD(CH9434_TASK_TAG, "idx:%d rec:%d total:%d", uart_idx, rec_buf_cnt,
                                  (int)uart_rec_total_cnt[uart_idx]);
-                        CH9434UARTxSetTxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
-                        packet_to_android[0] = (PACKET_HEADER >> 8) & 0xFF;
-                        packet_to_android[1] = PACKET_HEADER & 0xFF;
-                        packet_to_android[2] = 0x00;
-                        packet_to_android[3] = board_address & 0xFF;
-                        packet_to_android[4] = 0x00;
-                        packet_to_android[5] = 0x02; // 称重数据为01，RFID数据为02
-                        // 复制原始数据到新数组
-                        for (int i = 0; i < rec_buf_cnt; ++i)
+                        // CH9434UARTxSetTxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
+                        if (rec_buf_cnt >= 20)
                         {
-                            packet_to_android[i + 6] = uart_rec_buf[i];
-                        }
+                            packet_to_android[0] = (PACKET_HEADER >> 8) & 0xFF;
+                            packet_to_android[1] = PACKET_HEADER & 0xFF;
+                            packet_to_android[2] = 0x00;
+                            packet_to_android[3] = board_address & 0xFF;
+                            packet_to_android[4] = 0x00;
+                            packet_to_android[5] = 0x02; // 称重数据为01，RFID数据为02
+                            // 复制原始数据到新数组
+                            for (int i = 0; i < rec_buf_cnt; ++i)
+                            {
+                                packet_to_android[i + 6] = uart_rec_buf[i];
+                            }
 
-                        crc32_result = calculateCRC32(packet_to_android, rec_buf_cnt + 6);
-                        // 计算并追加CRC校验码
-                        packet_to_android[rec_buf_cnt + 6] = (crc32_result >> 24) & 0xFF;
-                        packet_to_android[rec_buf_cnt + 7] = (crc32_result >> 16) & 0xFF;
-                        packet_to_android[rec_buf_cnt + 8] = (crc32_result >> 8) & 0xFF;
-                        packet_to_android[rec_buf_cnt + 9] = crc32_result & 0xFF;
-                        e34_2g4d20d_sendData(CH9434_TASK_TAG, (char *)packet_to_android, rec_buf_cnt + 10);
+                            crc32_result = calculateCRC32(packet_to_android, rec_buf_cnt + 6);
+                            // 计算并追加CRC校验码
+                            packet_to_android[rec_buf_cnt + 6] = (crc32_result >> 24) & 0xFF;
+                            packet_to_android[rec_buf_cnt + 7] = (crc32_result >> 16) & 0xFF;
+                            packet_to_android[rec_buf_cnt + 8] = (crc32_result >> 8) & 0xFF;
+                            packet_to_android[rec_buf_cnt + 9] = crc32_result & 0xFF;
+                            if (xSemaphoreTake(mutex, portMAX_DELAY))
+                            {
+                                e34_2g4d20d_sendData(CH9434_TASK_TAG, (char *)packet_to_android, rec_buf_cnt + 10);
+                                xSemaphoreGive(mutex);
+                            }
+                        }
                     }
                     break;
                 }
@@ -336,28 +352,35 @@ static void ch9434_task(void *arg)
                     {
                         CH9434UARTxGetRxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
                         uart_rec_total_cnt[uart_idx] += rec_buf_cnt;
-                        ESP_LOGI(CH9434_TASK_TAG, "idx:%d rec:%d total:%d", uart_idx, rec_buf_cnt,
+                        ESP_LOGD(CH9434_TASK_TAG, "idx:%d rec:%d total:%d", uart_idx, rec_buf_cnt,
                                  (int)uart_rec_total_cnt[uart_idx]);
                         // CH9434UARTxSetTxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
-                        packet_to_android[0] = (PACKET_HEADER >> 8) & 0xFF;
-                        packet_to_android[1] = PACKET_HEADER & 0xFF;
-                        packet_to_android[2] = 0x00;
-                        packet_to_android[3] = board_address & 0xFF;
-                        packet_to_android[4] = 0x00;
-                        packet_to_android[5] = 0x02; // 称重数据为01，RFID数据为02
-                        // 复制原始数据到新数组
-                        for (int i = 0; i < rec_buf_cnt; ++i)
+                        if (rec_buf_cnt >= 20)
                         {
-                            packet_to_android[i + 6] = uart_rec_buf[i];
-                        }
+                            packet_to_android[0] = (PACKET_HEADER >> 8) & 0xFF;
+                            packet_to_android[1] = PACKET_HEADER & 0xFF;
+                            packet_to_android[2] = 0x00;
+                            packet_to_android[3] = board_address & 0xFF;
+                            packet_to_android[4] = 0x00;
+                            packet_to_android[5] = 0x02; // 称重数据为01，RFID数据为02
+                            // 复制原始数据到新数组
+                            for (int i = 0; i < rec_buf_cnt; ++i)
+                            {
+                                packet_to_android[i + 6] = uart_rec_buf[i];
+                            }
 
-                        crc32_result = calculateCRC32(packet_to_android, rec_buf_cnt + 6);
-                        // 计算并追加CRC校验码
-                        packet_to_android[rec_buf_cnt + 6] = (crc32_result >> 24) & 0xFF;
-                        packet_to_android[rec_buf_cnt + 7] = (crc32_result >> 16) & 0xFF;
-                        packet_to_android[rec_buf_cnt + 8] = (crc32_result >> 8) & 0xFF;
-                        packet_to_android[rec_buf_cnt + 9] = crc32_result & 0xFF;
-                        e34_2g4d20d_sendData(CH9434_TASK_TAG, (char *)packet_to_android, rec_buf_cnt + 10);
+                            crc32_result = calculateCRC32(packet_to_android, rec_buf_cnt + 6);
+                            // 计算并追加CRC校验码
+                            packet_to_android[rec_buf_cnt + 6] = (crc32_result >> 24) & 0xFF;
+                            packet_to_android[rec_buf_cnt + 7] = (crc32_result >> 16) & 0xFF;
+                            packet_to_android[rec_buf_cnt + 8] = (crc32_result >> 8) & 0xFF;
+                            packet_to_android[rec_buf_cnt + 9] = crc32_result & 0xFF;
+                            if (xSemaphoreTake(mutex, portMAX_DELAY))
+                            {
+                                e34_2g4d20d_sendData(CH9434_TASK_TAG, (char *)packet_to_android, rec_buf_cnt + 10);
+                                xSemaphoreGive(mutex);
+                            }
+                        }
                     }
                     break;
                 }
@@ -366,18 +389,19 @@ static void ch9434_task(void *arg)
                 case 0x00: // modem signal change
                 {
                     uart_msr = CH9434UARTxReadMSR(uart_idx);
-                    ESP_LOGI(CH9434_TASK_TAG, "uart_msr:%02x", uart_msr);
+                    ESP_LOGD(CH9434_TASK_TAG, "uart_msr:%02x", uart_msr);
                     break;
                 }
                 }
             }
         }
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        vTaskDelay(200 / portTICK_PERIOD_MS);
     }
 }
 
 void app_main(void)
 {
+    mutex = xSemaphoreCreateMutex();
     generate_crc32_table();
     get_switch_value();
     e34_2g4d20d_uart1_init();
