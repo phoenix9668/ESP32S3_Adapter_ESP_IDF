@@ -103,6 +103,7 @@ void e34_2g4d20d_parameter_set(char dev_head, char dev_addh, char dev_addl, char
     // char dev_option = 0x40;
     char set_para[7] = {dev_head, dev_addh, dev_addl, dev_sped, dev_chan, dev_option, '\0'};
     e34_2g4d20d_model_sel(SET);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
     e34_2g4d20d_sendData(E34_2G4D20D_TAG, (char *)set_para, 6);
     vTaskDelay(1000 / portTICK_PERIOD_MS);
     e34_2g4d20d_sendData(E34_2G4D20D_TAG, read_parameter, 3);

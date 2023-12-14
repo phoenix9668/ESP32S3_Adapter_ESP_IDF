@@ -158,12 +158,13 @@ static void e34_2g4d20d_tx_task(void *arg)
 {
     static const char *E34_2G4D20D_TX_TASK_TAG = "E34_2G4D20D_TX_TASK";
     esp_log_level_set(E34_2G4D20D_TX_TASK_TAG, ESP_LOG_DEBUG);
-    e34_2g4d20d_parameter_set(0xc0, 0x00, 0x00, 0x18, 0x00, 0x40);
     // 在开头插入包头和地址
     packet_to_android = (uint8_t *)malloc(RX_BUF_SIZE + 1);
     uint32_t crc32_result;
     while (1)
     {
+        // e34_2g4d20d_sendData(E34_2G4D20D_TX_TASK_TAG, "Hello world", strlen("Hello world"));
+        // vTaskDelay(2000 / portTICK_PERIOD_MS);
         if (from_table_data[PACKET_TO_ANDROID_LENGTH - 1] == 0x0d)
         {
             packet_to_android[0] = (PACKET_HEADER >> 8) & 0xFF;
@@ -187,7 +188,6 @@ static void e34_2g4d20d_tx_task(void *arg)
             if (xSemaphoreTake(mutex, portMAX_DELAY))
             {
                 e34_2g4d20d_sendData(E34_2G4D20D_TX_TASK_TAG, (char *)packet_to_android, PACKET_TO_ANDROID_LENGTH + 10);
-                vTaskDelay(10 / portTICK_PERIOD_MS);
                 xSemaphoreGive(mutex);
             }
         }
@@ -406,6 +406,7 @@ void app_main(void)
     get_switch_value();
     e34_2g4d20d_uart1_init();
     e34_2g4d20d_gpio_init();
+    e34_2g4d20d_parameter_set(0xc0, 0x00, 0x00, 0x18, 0x00, 0x40);
     uart2_init();
     ch9434_spi2_init();
     xTaskCreate(rx_task, "uart_rx_task", 1024 * 8, NULL, configMAX_PRIORITIES, NULL);
