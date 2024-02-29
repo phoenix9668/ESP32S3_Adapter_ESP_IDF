@@ -14,6 +14,12 @@
 #include "e34_2g4d20d.h"
 
 /*
+ * LED pins definition
+ */
+#define LED_GREEN_PIN (GPIO_NUM_8)
+#define LED_BLUE_PIN (GPIO_NUM_9)
+
+/*
  * UART2 pins and parameters definition
  */
 #define UART2_TXD_PIN (GPIO_NUM_48)
@@ -83,6 +89,21 @@ uint32_t calculateCRC32(const uint8_t *data, size_t length)
     return ~crc;
 }
 
+// 初始化LED
+void led_gpio_init(void)
+{
+    gpio_config_t gpio_conf;
+    gpio_conf.mode = GPIO_MODE_OUTPUT;
+    gpio_conf.pin_bit_mask = (1ULL << LED_GREEN_PIN) | (1ULL << LED_BLUE_PIN);
+    gpio_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+    gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    gpio_conf.intr_type = GPIO_INTR_DISABLE;
+    gpio_config(&gpio_conf);
+
+    gpio_set_level(LED_GREEN_PIN, 0);
+    gpio_set_level(LED_BLUE_PIN, 0);
+}
+
 // get switch value on PCB
 void get_switch_value(void)
 {
@@ -143,8 +164,10 @@ static void rx_task(void *arg)
     while (1)
     {
         from_table_rxBytes = uart_read_bytes(UART_NUM_2, from_table_data, RX_BUF_SIZE, 200 / portTICK_PERIOD_MS);
+        gpio_set_level(LED_GREEN_PIN, 0);
         if (from_table_rxBytes > 0)
         {
+            gpio_set_level(LED_GREEN_PIN, 1);
             from_table_data[from_table_rxBytes] = 0;
             ESP_LOGD(RX_TASK_TAG, "Read %d bytes: '%s'", from_table_rxBytes, from_table_data);
             ESP_LOG_BUFFER_HEXDUMP(RX_TASK_TAG, from_table_data, from_table_rxBytes, ESP_LOG_DEBUG);
@@ -167,6 +190,7 @@ static void e34_2g4d20d_tx_task(void *arg)
         // vTaskDelay(2000 / portTICK_PERIOD_MS);
         if (from_table_data[PACKET_TO_ANDROID_LENGTH - 1] == 0x0d)
         {
+            gpio_set_level(LED_BLUE_PIN, 1);
             packet_to_android[0] = (PACKET_HEADER >> 8) & 0xFF;
             packet_to_android[1] = PACKET_HEADER & 0xFF;
             packet_to_android[2] = 0x00;
@@ -192,6 +216,7 @@ static void e34_2g4d20d_tx_task(void *arg)
             }
         }
         vTaskDelay(200 / portTICK_PERIOD_MS);
+        gpio_set_level(LED_BLUE_PIN, 0);
     }
 }
 
@@ -403,6 +428,7 @@ void app_main(void)
 {
     mutex = xSemaphoreCreateMutex();
     generate_crc32_table();
+    led_gpio_init();
     get_switch_value();
     e34_2g4d20d_uart1_init();
     e34_2g4d20d_gpio_init();
