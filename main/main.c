@@ -161,20 +161,35 @@ static void rx_task(void *arg)
     static const char *RX_TASK_TAG = "RX_TASK";
     esp_log_level_set(RX_TASK_TAG, ESP_LOG_DEBUG);
     from_table_data = (uint8_t *)malloc(RX_BUF_SIZE + 1);
+    uint8_t cnt = 0;
     while (1)
     {
         from_table_rxBytes = uart_read_bytes(UART_NUM_2, from_table_data, RX_BUF_SIZE, 200 / portTICK_PERIOD_MS);
         gpio_set_level(LED_GREEN_PIN, 0);
         if (from_table_rxBytes > 0)
         {
-            gpio_set_level(LED_GREEN_PIN, 1);
+            cnt++;
+            if (cnt >= 5)
+            {
+                gpio_set_level(LED_GREEN_PIN, 1);
+                cnt = 0;
+            }
             from_table_data[from_table_rxBytes] = 0;
             ESP_LOGD(RX_TASK_TAG, "Read %d bytes: '%s'", from_table_rxBytes, from_table_data);
-            ESP_LOG_BUFFER_HEXDUMP(RX_TASK_TAG, from_table_data, from_table_rxBytes, ESP_LOG_DEBUG);
+            // ESP_LOG_BUFFER_HEXDUMP(RX_TASK_TAG, from_table_data, from_table_rxBytes, ESP_LOG_DEBUG);
             memset(from_table_data, 0, RX_BUF_SIZE);
         }
     }
     free(from_table_data);
+}
+
+static void e34_2g4d20d_reset_task(void *arg)
+{
+    while (1)
+    {
+        e34_2g4d20d_reset();
+        vTaskDelay(600000 / portTICK_PERIOD_MS);
+    }
 }
 
 static void e34_2g4d20d_tx_task(void *arg)
@@ -184,13 +199,19 @@ static void e34_2g4d20d_tx_task(void *arg)
     // 在开头插入包头和地址
     packet_to_android = (uint8_t *)malloc(RX_BUF_SIZE + 1);
     uint32_t crc32_result;
+    uint8_t cnt = 0;
     while (1)
     {
         // e34_2g4d20d_sendData(E34_2G4D20D_TX_TASK_TAG, "Hello world", strlen("Hello world"));
         // vTaskDelay(2000 / portTICK_PERIOD_MS);
         if (from_table_data[PACKET_TO_ANDROID_LENGTH - 1] == 0x0d)
         {
-            gpio_set_level(LED_BLUE_PIN, 1);
+            cnt++;
+            if (cnt >= 5)
+            {
+                gpio_set_level(LED_BLUE_PIN, 1);
+                cnt = 0;
+            }
             packet_to_android[0] = (PACKET_HEADER >> 8) & 0xFF;
             packet_to_android[1] = PACKET_HEADER & 0xFF;
             packet_to_android[2] = 0x00;
@@ -439,5 +460,6 @@ void app_main(void)
     xTaskCreate(tx_task, "uart_tx_task", 1024 * 8, NULL, configMAX_PRIORITIES - 3, NULL);
     xTaskCreate(e34_2g4d20d_rx_task, "e34_2g4d20d_rx_task", 1024 * 8, NULL, configMAX_PRIORITIES, NULL);
     xTaskCreate(e34_2g4d20d_tx_task, "e34_2g4d20d_tx_task", 1024 * 8, NULL, configMAX_PRIORITIES - 1, NULL);
+    xTaskCreate(e34_2g4d20d_reset_task, "e34_2g4d20d_reset_task", 1024 * 8, NULL, configMAX_PRIORITIES, NULL);
     xTaskCreate(ch9434_task, "ch9434_task", 1024 * 8, NULL, configMAX_PRIORITIES - 2, NULL);
 }

@@ -52,5 +52,6 @@ int e34_2g4d20d_sendData(const char *logName, const char *data, int len);
 
 void e34_2g4d20d_model_sel(modes_t mode);
 void e34_2g4d20d_parameter_set(char dev_head, char dev_addh, char dev_addl, char dev_sped, char dev_chan, char dev_option);
+void e34_2g4d20d_reset();
 
 #endif /*__E34_2G4D20D_H__ */

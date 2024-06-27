@@ -25,8 +25,8 @@ char reset_device[4] = {0xC4, 0xC4, 0xC4, '\0'};
  */
 void e34_2g4d20d_uart1_init(void)
 {
-    esp_log_level_set(E34_2G4D20D_TAG, ESP_LOG_INFO);
-    ESP_LOGI(E34_2G4D20D_TAG, "Initializing bus UART%d...", UART_NUM_1);
+    esp_log_level_set(E34_2G4D20D_TAG, ESP_LOG_DEBUG);
+    ESP_LOGD(E34_2G4D20D_TAG, "Initializing bus UART%d...", UART_NUM_1);
     const uart_config_t uart1_config = {
         .baud_rate = E34_2G4D20D_Baudrate,
         .data_bits = UART_DATA_8_BITS,
@@ -60,7 +60,7 @@ int e34_2g4d20d_sendData(const char *logName, const char *data, int len)
     // const int len = strlen(data);
     const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
     ESP_LOGD(logName, "Wrote %d bytes", txBytes);
-    ESP_LOG_BUFFER_HEXDUMP(logName, data, len, ESP_LOG_DEBUG);
+    // ESP_LOG_BUFFER_HEXDUMP(logName, data, len, ESP_LOG_DEBUG);
     return txBytes;
 }
 
@@ -108,5 +108,14 @@ void e34_2g4d20d_parameter_set(char dev_head, char dev_addh, char dev_addl, char
     vTaskDelay(1000 / portTICK_PERIOD_MS);
     e34_2g4d20d_sendData(E34_2G4D20D_TAG, read_parameter, 3);
     vTaskDelay(1000 / portTICK_PERIOD_MS);
+    e34_2g4d20d_model_sel(FULL_DUPLEX);
+}
+
+void e34_2g4d20d_reset()
+{
+    e34_2g4d20d_model_sel(SET);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
+    e34_2g4d20d_sendData(E34_2G4D20D_TAG, reset_device, 3);
+    vTaskDelay(100 / portTICK_PERIOD_MS);
     e34_2g4d20d_model_sel(FULL_DUPLEX);
 }
