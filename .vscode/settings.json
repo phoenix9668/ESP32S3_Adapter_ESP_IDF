@@ -1,6 +1,6 @@
 {
   "C_Cpp.intelliSenseEngine": "default",
-  "idf.portWin": "COM89",
+  "idf.portWin": "COM3",
   "idf.adapterTargetName": "esp32s3",
   "idf.openOcdConfigs": [
     "interface/ftdi/esp32_devkitj_v1.cfg",
@@ -37,7 +37,10 @@
     "esp_system.h": "c",
     "esp_bit_defs.h": "c",
     "uart.h": "c",
-    "*.tcc": "c"
+    "*.tcc": "c",
+    "bitset": "c",
+    "chrono": "c",
+    "algorithm": "c"
   },
   "idf.flashType": "UART"
 }

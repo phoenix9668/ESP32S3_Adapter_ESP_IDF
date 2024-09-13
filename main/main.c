@@ -119,6 +119,15 @@ void get_switch_value(void)
 
     board_address = (gpio_get_level(ADDR4) << 3) | (gpio_get_level(ADDR3) << 2) | (gpio_get_level(ADDR2) << 1) | gpio_get_level(ADDR1);
     ESP_LOGI(SWITCH_TAG, "board_address:%02x", board_address);
+    for (int i = 0; i < board_address; i++)
+    {
+        gpio_set_level(LED_GREEN_PIN, 1);
+        gpio_set_level(LED_BLUE_PIN, 1);
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        gpio_set_level(LED_GREEN_PIN, 0);
+        gpio_set_level(LED_BLUE_PIN, 0);
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+    }
 }
 
 void uart2_init(void)
