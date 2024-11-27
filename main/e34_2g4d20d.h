@@ -26,7 +26,6 @@
  * -----------------------------------------------------------------------------
  */
 #define E34_2G4D20D_Baudrate 9600
-static const int RX_BUF_SIZE = 1024;
 
 typedef enum
 {

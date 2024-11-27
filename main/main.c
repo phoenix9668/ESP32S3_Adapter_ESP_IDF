@@ -13,6 +13,9 @@
 #include "ch9434.h"
 #include "e34_2g4d20d.h"
 
+#define TAG "MAIN"
+SemaphoreHandle_t mutex;
+QueueHandle_t tableQueue;
 /*
  * LED pins definition
  */
@@ -24,9 +27,13 @@
  */
 #define UART2_TXD_PIN (GPIO_NUM_48)
 #define UART2_RXD_PIN (GPIO_NUM_38)
-uint8_t *from_table_data = NULL;
-int from_table_rxBytes;
 uint8_t *packet_to_android = NULL;
+#define RX_BUF_SIZE 512
+typedef struct
+{
+    uint8_t data[RX_BUF_SIZE];
+    size_t length;
+} table_data_t;
 
 /*
  * CH9434 parameters definition
@@ -50,7 +57,6 @@ uint8_t ch9434_init_end = 0;
 #define PACKET_HEADER 0xE55E
 #define PACKET_TO_ANDROID_LENGTH 6
 uint8_t board_address = 0x00;
-SemaphoreHandle_t mutex;
 
 #define ADDR1 (GPIO_NUM_42)
 #define ADDR2 (GPIO_NUM_41)
@@ -169,27 +175,32 @@ static void rx_task(void *arg)
 {
     static const char *RX_TASK_TAG = "RX_TASK";
     esp_log_level_set(RX_TASK_TAG, ESP_LOG_DEBUG);
-    from_table_data = (uint8_t *)malloc(RX_BUF_SIZE + 1);
     uint8_t cnt = 0;
     while (1)
     {
-        from_table_rxBytes = uart_read_bytes(UART_NUM_2, from_table_data, RX_BUF_SIZE, 200 / portTICK_PERIOD_MS);
+        table_data_t table_data;
+        size_t from_table_rxBytes = uart_read_bytes(UART_NUM_2, table_data.data, RX_BUF_SIZE, 200 / portTICK_PERIOD_MS);
         gpio_set_level(LED_GREEN_PIN, 0);
         if (from_table_rxBytes > 0)
         {
+            table_data.length = from_table_rxBytes;
+            table_data.data[table_data.length] = 0;
+            ESP_LOGD(RX_TASK_TAG, "Read %d bytes: '%s'", table_data.length, table_data.data);
+            ESP_LOG_BUFFER_HEXDUMP(RX_TASK_TAG, table_data.data, table_data.length, ESP_LOG_DEBUG);
+            // Send data to queue
+            if (xQueueSend(tableQueue, &table_data, portMAX_DELAY) != pdPASS)
+            {
+                ESP_LOGE(RX_TASK_TAG, "Failed to send data to queue");
+            }
             cnt++;
             if (cnt >= 5)
             {
                 gpio_set_level(LED_GREEN_PIN, 1);
                 cnt = 0;
             }
-            from_table_data[from_table_rxBytes] = 0;
-            ESP_LOGD(RX_TASK_TAG, "Read %d bytes: '%s'", from_table_rxBytes, from_table_data);
-            // ESP_LOG_BUFFER_HEXDUMP(RX_TASK_TAG, from_table_data, from_table_rxBytes, ESP_LOG_DEBUG);
-            memset(from_table_data, 0, RX_BUF_SIZE);
         }
+        memset(table_data.data, 0, RX_BUF_SIZE);
     }
-    free(from_table_data);
 }
 
 static void e34_2g4d20d_reset_task(void *arg)
@@ -213,36 +224,43 @@ static void e34_2g4d20d_tx_task(void *arg)
     {
         // e34_2g4d20d_sendData(E34_2G4D20D_TX_TASK_TAG, "Hello world", strlen("Hello world"));
         // vTaskDelay(2000 / portTICK_PERIOD_MS);
-        if (from_table_data[PACKET_TO_ANDROID_LENGTH - 1] == 0x0d)
+        table_data_t table_data;
+        if (xQueueReceive(tableQueue, &table_data, portMAX_DELAY) == pdPASS)
         {
-            cnt++;
-            if (cnt >= 5)
+            table_data.data[table_data.length] = 0;
+            ESP_LOGD(E34_2G4D20D_TX_TASK_TAG, "Read from queue %d bytes: '%s'", table_data.length, table_data.data);
+            ESP_LOG_BUFFER_HEXDUMP(E34_2G4D20D_TX_TASK_TAG, table_data.data, table_data.length, ESP_LOG_DEBUG);
+            if (table_data.data[table_data.length - 1] == 0x0d || (table_data.data[table_data.length - 1] == 0x0a && table_data.data[table_data.length - 2] == 0x0d))
             {
-                gpio_set_level(LED_BLUE_PIN, 1);
-                cnt = 0;
-            }
-            packet_to_android[0] = (PACKET_HEADER >> 8) & 0xFF;
-            packet_to_android[1] = PACKET_HEADER & 0xFF;
-            packet_to_android[2] = 0x00;
-            packet_to_android[3] = board_address & 0xFF;
-            packet_to_android[4] = 0x00;
-            packet_to_android[5] = 0x01; // 称重数据为01，RFID数据为02
-            // 复制原始数据到新数组
-            for (int i = 0; i < PACKET_TO_ANDROID_LENGTH; ++i)
-            {
-                packet_to_android[i + 6] = from_table_data[i];
-            }
+                cnt++;
+                if (cnt >= 5)
+                {
+                    gpio_set_level(LED_BLUE_PIN, 1);
+                    cnt = 0;
+                }
+                packet_to_android[0] = (PACKET_HEADER >> 8) & 0xFF;
+                packet_to_android[1] = PACKET_HEADER & 0xFF;
+                packet_to_android[2] = 0x00;
+                packet_to_android[3] = board_address & 0xFF;
+                packet_to_android[4] = 0x00;
+                packet_to_android[5] = 0x01; // 称重数据为01，RFID数据为02
+                // 复制原始数据到新数组
+                for (int i = 0; i < table_data.length; ++i)
+                {
+                    packet_to_android[i + 6] = table_data.data[i];
+                }
 
-            crc32_result = calculateCRC32(packet_to_android, PACKET_TO_ANDROID_LENGTH + 6);
-            // 计算并追加CRC校验码
-            packet_to_android[PACKET_TO_ANDROID_LENGTH + 6] = (crc32_result >> 24) & 0xFF;
-            packet_to_android[PACKET_TO_ANDROID_LENGTH + 7] = (crc32_result >> 16) & 0xFF;
-            packet_to_android[PACKET_TO_ANDROID_LENGTH + 8] = (crc32_result >> 8) & 0xFF;
-            packet_to_android[PACKET_TO_ANDROID_LENGTH + 9] = crc32_result & 0xFF;
-            if (xSemaphoreTake(mutex, portMAX_DELAY))
-            {
-                e34_2g4d20d_sendData(E34_2G4D20D_TX_TASK_TAG, (char *)packet_to_android, PACKET_TO_ANDROID_LENGTH + 10);
-                xSemaphoreGive(mutex);
+                crc32_result = calculateCRC32(packet_to_android, table_data.length + 6);
+                // 计算并追加CRC校验码
+                packet_to_android[table_data.length + 6] = (crc32_result >> 24) & 0xFF;
+                packet_to_android[table_data.length + 7] = (crc32_result >> 16) & 0xFF;
+                packet_to_android[table_data.length + 8] = (crc32_result >> 8) & 0xFF;
+                packet_to_android[table_data.length + 9] = crc32_result & 0xFF;
+                if (xSemaphoreTake(mutex, portMAX_DELAY))
+                {
+                    e34_2g4d20d_sendData(E34_2G4D20D_TX_TASK_TAG, (char *)packet_to_android, table_data.length + 10);
+                    xSemaphoreGive(mutex);
+                }
             }
         }
         vTaskDelay(200 / portTICK_PERIOD_MS);
@@ -260,7 +278,7 @@ static void e34_2g4d20d_rx_task(void *arg)
     while (1)
     {
         const int rxBytes = uart_read_bytes(UART_NUM_1, data, RX_BUF_SIZE, 200 / portTICK_PERIOD_MS);
-        if (rxBytes > 0)
+        if (rxBytes > 4)
         {
             data[rxBytes] = 0;
             ESP_LOGD(E34_2G4D20D_RX_TASK_TAG, "Read %d bytes: '%s'", rxBytes, data);
@@ -457,6 +475,17 @@ static void ch9434_task(void *arg)
 void app_main(void)
 {
     mutex = xSemaphoreCreateMutex();
+    if (mutex == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to create mutex");
+        return;
+    }
+    tableQueue = xQueueCreate(20, sizeof(table_data_t));
+    if (tableQueue == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to create queue");
+        return;
+    }
     generate_crc32_table();
     led_gpio_init();
     get_switch_value();

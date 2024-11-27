@@ -14,6 +14,7 @@
 /*
  * e34_2g4d20d parameters definition
  */
+#define RX_BUF_SIZE 512
 static const char *E34_2G4D20D_TAG = "E34_2G4D20D";
 char read_parameter[4] = {0xC1, 0xC1, 0xC1, '\0'};
 char read_version[4] = {0xC3, 0xC3, 0xC3, '\0'};
@@ -60,7 +61,7 @@ int e34_2g4d20d_sendData(const char *logName, const char *data, int len)
     // const int len = strlen(data);
     const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
     ESP_LOGD(logName, "Wrote %d bytes", txBytes);
-    // ESP_LOG_BUFFER_HEXDUMP(logName, data, len, ESP_LOG_DEBUG);
+    ESP_LOG_BUFFER_HEXDUMP(logName, data, len, ESP_LOG_DEBUG);
     return txBytes;
 }
 
