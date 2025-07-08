@@ -1,7 +1,7 @@
 {
     "version":            "1",
     "project_name":       "ESP32S3_Adapter_ESP_IDF",
-    "project_version":    "ff45770-dirty",
+    "project_version":    "d220409-dirty",
     "project_path":       "C:/Users/phoen/Dropbox/Git/GitHub/ESP32S3_Adapter_ESP_IDF",
     "idf_path":           "C:/Software/ESP-IDF_Extension/ESP-IDF_V5.0.3/esp-idf",
     "build_dir":          "C:/Users/phoen/Dropbox/Git/GitHub/ESP32S3_Adapter_ESP_IDF",

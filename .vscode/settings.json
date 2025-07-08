@@ -1,6 +1,6 @@
 {
   "C_Cpp.intelliSenseEngine": "default",
-  "idf.portWin": "COM40",
+  "idf.portWin": "COM97",
   "idf.adapterTargetName": "esp32s3",
   "idf.openOcdConfigs": [
     "interface/ftdi/esp32_devkitj_v1.cfg",
@@ -42,5 +42,8 @@
     "chrono": "c",
     "algorithm": "c"
   },
-  "idf.flashType": "UART"
+  "idf.flashType": "UART",
+  "idf.espIdfPathWin": "c:\\Users\\phoen\\esp\\v5.4\\esp-idf",
+  "idf.toolsPathWin": "c:\\Users\\phoen\\esp\\v5.4\\tools",
+  "idf.pythonInstallPath": "c:\\Users\\phoen\\esp\\v5.4\\tools\\tools\\idf-python\\3.11.2\\python.exe"
 }
