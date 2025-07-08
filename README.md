@@ -1,62 +1,32 @@
-| Supported Targets | ESP32 | ESP32-C2 | ESP32-C3 | ESP32-S2 | ESP32-S3 |
-| ----------------- | ----- | -------- | -------- | -------- | -------- |
-
-# UART Asynchronous Example with Separate Receive and Transfer Tasks
+# _Sample project_
 
 (See the README.md file in the upper level 'examples' directory for more information about examples.)
 
-This example demonstrates how two asynchronous tasks can use the same UART interface for communication. One can use
-this example to develop more complex applications for serial communication.
+This is the simplest buildable example. The example is used by command `idf.py create-project`
+that copies the project to user specified path and set it's name. For more information follow the [docs page](https://docs.espressif.com/projects/esp-idf/en/latest/api-guides/build-system.html#start-a-new-project)
 
-The example starts two FreeRTOS tasks:
-1. The first task periodically transmits `Hello world` via the UART.
-2. The second task task listens, receives and prints data from the UART.
+
 
 ## How to use example
+We encourage the users to use the example as a template for the new projects.
+A recommended way is to follow the instructions on a [docs page](https://docs.espressif.com/projects/esp-idf/en/latest/api-guides/build-system.html#start-a-new-project).
 
-### Hardware Required
+## Example folder contents
 
-The example can be run on any commonly available ESP32, ESP32-S and ESP32-C series based development board. You will need a USB cable to connect the
-development board to a computer, and a simple one-wire cable for shorting two pins of the board.
+The project **sample_project** contains one source file in C language [main.c](main/main.c). The file is located in folder [main](main).
 
-### Setup the Hardware
+ESP-IDF projects are built using CMake. The project build configuration is contained in `CMakeLists.txt`
+files that provide set of directives and instructions describing the project's source files and targets
+(executable, library, or both). 
 
-The `RXD_PIN` and `TXD_PIN` which are configurable in the code (by default `GPIO4` and `GPIO5`) need to be shorted in
-order to receive back the same data which were sent out.
-
-### Configure the project
-
-```
-idf.py menuconfig
-```
-
-### Build and Flash
-
-Build the project and flash it to the board, then run monitor tool to view serial output:
+Below is short explanation of remaining files in the project folder.
 
 ```
-idf.py -p PORT flash monitor
+├── CMakeLists.txt
+├── main
+│   ├── CMakeLists.txt
+│   └── main.c
+└── README.md                  This is the file you are currently reading
 ```
-
-(To exit the serial monitor, type ``Ctrl-]``.)
-
-See the Getting Started Guide for full steps to configure and use ESP-IDF to build projects.
-
-## Example Output
-
-You will receive the following repeating output from the monitoring console:
-```
-...
-I (3261) TX_TASK: Wrote 11 bytes
-I (4261) RX_TASK: Read 11 bytes: 'Hello world'
-I (4261) RX_TASK: 0x3ffb821c   48 65 6c 6c 6f 20 77 6f  72 6c 64                 |Hello world|
-...
-```
-
-## Troubleshooting
-
-If you do not see any output from `RX_TASK` then check if you have the `RXD_PIN` and `TXD_PIN` pins shorted on the board.
-
-## PCB
-
-https://www.notion.so/ESP32S3_Adapter_V1-2-a935d3321fc945ec957f1909d480b05b?pvs=4
+Additionally, the sample project contains Makefile and component.mk files, used for the legacy Make based build system. 
+They are not used or needed when building with CMake and idf.py.

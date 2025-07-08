@@ -45,5 +45,5 @@
   "idf.flashType": "UART",
   "idf.espIdfPathWin": "c:\\Users\\phoen\\esp\\v5.4\\esp-idf",
   "idf.toolsPathWin": "c:\\Users\\phoen\\esp\\v5.4\\tools",
-  "idf.pythonInstallPath": "c:\\Users\\phoen\\esp\\v5.4\\tools\\tools\\idf-python\\3.11.2\\python.exe"
+  "idf.pythonInstallPath": "/usr/bin/python3"
 }
