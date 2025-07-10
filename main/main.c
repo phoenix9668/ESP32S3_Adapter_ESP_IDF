@@ -295,7 +295,7 @@ static void e34_2g4d20d_rx_task(void *arg)
                             rfid_one_shot[i] = data[i + 6];
                         }
 
-                        CH9434UARTxSetTxFIFOData(0, rfid_one_shot, sizeof(rfid_one_shot));
+                        CH9434UARTxSetTxFIFOData(2, rfid_one_shot, sizeof(rfid_one_shot));
                     }
                 }
             }

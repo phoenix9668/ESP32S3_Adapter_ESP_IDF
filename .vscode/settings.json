@@ -45,5 +45,7 @@
   "idf.flashType": "UART",
   "idf.espIdfPathWin": "c:\\Users\\phoen\\esp\\v5.4\\esp-idf",
   "idf.toolsPathWin": "c:\\Users\\phoen\\esp\\v5.4\\tools",
-  "idf.pythonInstallPath": "/usr/bin/python3"
+  "idf.pythonInstallPath": "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3",
+  "idf.espIdfPath": "/Users/gally/esp/v5.4.2/esp-idf",
+  "idf.toolsPath": "/Users/gally/.espressif"
 }
