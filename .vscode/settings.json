@@ -2,10 +2,7 @@
   "C_Cpp.intelliSenseEngine": "default",
   "idf.portWin": "COM97",
   "idf.adapterTargetName": "esp32s3",
-  "idf.openOcdConfigs": [
-    "interface/ftdi/esp32_devkitj_v1.cfg",
-    "target/esp32s3.cfg"
-  ],
+  "idf.openOcdConfigs": ["board/esp32s3-builtin.cfg"],
   "files.associations": {
     "freertos.h": "c",
     "array": "c",
@@ -45,7 +42,9 @@
   "idf.flashType": "UART",
   "idf.espIdfPathWin": "c:\\Users\\phoen\\esp\\v5.4\\esp-idf",
   "idf.toolsPathWin": "c:\\Users\\phoen\\esp\\v5.4\\tools",
-  "idf.pythonInstallPath": "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3",
+  "idf.pythonInstallPath": "/usr/bin/python3",
   "idf.espIdfPath": "/Users/gally/esp/v5.4.2/esp-idf",
-  "idf.toolsPath": "/Users/gally/.espressif"
+  "idf.toolsPath": "/Users/gally/.espressif",
+  "idf.port": "/dev/tty.usbmodem1101",
+  "Codegeex.RepoIndex": true
 }

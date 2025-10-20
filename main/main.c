@@ -166,7 +166,7 @@ static void tx_task(void *arg)
     esp_log_level_set(TX_TASK_TAG, ESP_LOG_INFO);
     while (1)
     {
-        sendData(TX_TASK_TAG, "Hello world");
+        // sendData(TX_TASK_TAG, "Hello world");
         vTaskDelay(2000 / portTICK_PERIOD_MS);
     }
 }
@@ -296,6 +296,16 @@ static void e34_2g4d20d_rx_task(void *arg)
                         }
 
                         CH9434UARTxSetTxFIFOData(2, rfid_one_shot, sizeof(rfid_one_shot));
+                    }
+                    else if ((data[0] == ((PACKET_HEADER >> 8) & 0xFF)) && (data[1] == (PACKET_HEADER & 0xFF)) && (data[2] == 0x00) && (data[3] == (board_address & 0xFF)) && (data[4] == 0x00) && (data[5] == 0x01))
+                    {
+                        int weight_data_len = rxBytes - 4 - 6; // 去掉帧头(6字节)和CRC(4字节)
+                        if (weight_data_len > 0)
+                        {
+                            const int txBytes = uart_write_bytes(UART_NUM_2, &data[6], weight_data_len);
+                            ESP_LOGD(E34_2G4D20D_RX_TASK_TAG, "Sent weight data: %d bytes", txBytes);
+                            ESP_LOG_BUFFER_HEXDUMP(E34_2G4D20D_RX_TASK_TAG, &data[6], weight_data_len, ESP_LOG_DEBUG);
+                        }
                     }
                 }
             }
