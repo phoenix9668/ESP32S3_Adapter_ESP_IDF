@@ -95,6 +95,30 @@ uint32_t calculateCRC32(const uint8_t *data, size_t length)
     return ~crc;
 }
 
+// 计算Modbus RTU CRC16
+uint16_t calculateModbusCRC16(const uint8_t *data, size_t length)
+{
+    uint16_t crc = 0xFFFF;
+    
+    for (size_t i = 0; i < length; ++i)
+    {
+        crc ^= data[i];
+        for (int j = 0; j < 8; ++j)
+        {
+            if (crc & 0x0001)
+            {
+                crc = (crc >> 1) ^ 0xA001;
+            }
+            else
+            {
+                crc = crc >> 1;
+            }
+        }
+    }
+    
+    return crc;
+}
+
 // 初始化LED
 void led_gpio_init(void)
 {
@@ -139,7 +163,7 @@ void get_switch_value(void)
 void uart2_init(void)
 {
     const uart_config_t uart2_config = {
-        .baud_rate = 9600,
+        .baud_rate = 115200,
         .data_bits = UART_DATA_8_BITS,
         .parity = UART_PARITY_DISABLE,
         .stop_bits = UART_STOP_BITS_1,
@@ -179,7 +203,7 @@ static void rx_task(void *arg)
     while (1)
     {
         table_data_t table_data;
-        size_t from_table_rxBytes = uart_read_bytes(UART_NUM_2, table_data.data, RX_BUF_SIZE, 200 / portTICK_PERIOD_MS);
+        size_t from_table_rxBytes = uart_read_bytes(UART_NUM_2, table_data.data, RX_BUF_SIZE, 10 / portTICK_PERIOD_MS);
         gpio_set_level(LED_GREEN_PIN, 0);
         if (from_table_rxBytes > 0)
         {
@@ -262,8 +286,57 @@ static void e34_2g4d20d_tx_task(void *arg)
                     xSemaphoreGive(mutex);
                 }
             }
+            else if (table_data.data[0] == 0x01 && table_data.data[1] == 0x03)
+            {
+                // Modbus RTU数据处理：根据第三个字节判断格式
+                int modbus_packet_len = 0;
+                uint8_t *modbus_packet = NULL;
+                
+                // 第一种格式: 01 03 04 xx xx xx xx [CRC16] - 长度 9 字节
+                if (table_data.length >= 9 && table_data.data[2] == 0x04)
+                {
+                    modbus_packet_len = 9;
+                    modbus_packet = table_data.data;
+                }
+                // 第二种格式: 01 03 2b xx ... [CRC16] - 长度 12 字节
+                else if (table_data.length >= 12 && table_data.data[2] == 0x2b)
+                {
+                    modbus_packet_len = 12;
+                    modbus_packet = table_data.data;
+                }
+                
+                if (modbus_packet_len > 0 && modbus_packet != NULL)
+                {
+                    // 计算CRC16（不包含最后2个字节的CRC）
+                    uint16_t calculated_crc = calculateModbusCRC16(modbus_packet, modbus_packet_len - 2);
+                    // Modbus RTU的CRC是低字节在前，高字节在后
+                    uint16_t received_crc = (modbus_packet[modbus_packet_len - 1] << 8) | modbus_packet[modbus_packet_len - 2];
+                    
+                    if (calculated_crc == received_crc)
+                    {
+                        // CRC校验通过，转发完整的Modbus RTU数据包（包含CRC）
+                        if (xSemaphoreTake(mutex, portMAX_DELAY))
+                        {
+                            e34_2g4d20d_sendData(E34_2G4D20D_TX_TASK_TAG, (char *)modbus_packet, modbus_packet_len);
+                            xSemaphoreGive(mutex);
+                        }
+                        ESP_LOGI(E34_2G4D20D_TX_TASK_TAG, "Sent Modbus RTU data: %d bytes", modbus_packet_len);
+                        ESP_LOG_BUFFER_HEXDUMP(E34_2G4D20D_TX_TASK_TAG, modbus_packet, modbus_packet_len, ESP_LOG_INFO);
+                    }
+                    else
+                    {
+                        ESP_LOGW(E34_2G4D20D_TX_TASK_TAG, "Modbus CRC error: calculated=0x%04X, received=0x%04X", calculated_crc, received_crc);
+                        ESP_LOG_BUFFER_HEXDUMP(E34_2G4D20D_TX_TASK_TAG, modbus_packet, modbus_packet_len, ESP_LOG_WARN);
+                    }
+                }
+                else
+                {
+                    ESP_LOGW(E34_2G4D20D_TX_TASK_TAG, "Unknown Modbus format, byte[2]=0x%02X, length=%d", table_data.data[2], table_data.length);
+                    ESP_LOG_BUFFER_HEXDUMP(E34_2G4D20D_TX_TASK_TAG, table_data.data, table_data.length, ESP_LOG_WARN);
+                }
+            }
         }
-        vTaskDelay(200 / portTICK_PERIOD_MS);
+        vTaskDelay(10 / portTICK_PERIOD_MS);
         gpio_set_level(LED_BLUE_PIN, 0);
     }
 }
