@@ -299,7 +299,7 @@ static void e34_2g4d20d_tx_task(void *arg)
                     modbus_packet = table_data.data;
                 }
                 // 第二种格式: 01 03 2b xx ... [CRC16] - 长度 12 字节
-                else if (table_data.length >= 12 && table_data.data[2] == 0x2b)
+                else if (table_data.length >= 12 && (table_data.data[2] == 0x2b || table_data.data[2] == 0x2d))
                 {
                     modbus_packet_len = 12;
                     modbus_packet = table_data.data;
