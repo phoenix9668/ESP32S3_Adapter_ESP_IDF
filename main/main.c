@@ -254,7 +254,7 @@ static void e34_2g4d20d_tx_task(void *arg)
             table_data.data[table_data.length] = 0;
             ESP_LOGD(E34_2G4D20D_TX_TASK_TAG, "Read from queue %d bytes: '%s'", table_data.length, table_data.data);
             ESP_LOG_BUFFER_HEXDUMP(E34_2G4D20D_TX_TASK_TAG, table_data.data, table_data.length, ESP_LOG_DEBUG);
-            if (table_data.data[table_data.length - 1] == 0x0d || (table_data.data[table_data.length - 1] == 0x0a && table_data.data[table_data.length - 2] == 0x0d))
+            if (table_data.data[table_data.length - 1] == 0x0d || (table_data.data[table_data.length - 1] == 0x0a && table_data.data[table_data.length - 2] == 0x0d) || (table_data.data[table_data.length - 1] == 0x23 && table_data.data[table_data.length - 2] == 0x2e))
             {
                 cnt++;
                 if (cnt >= 5)
