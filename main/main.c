@@ -348,38 +348,172 @@ static void e34_2g4d20d_rx_task(void *arg)
     uint8_t *data = (uint8_t *)malloc(RX_BUF_SIZE + 1);
     uint8_t rfid_one_shot[5] = {0x04, 0xFF, 0x01, 0x1B, 0xB4};
     uint32_t crc32_result;
+    
+    // 粘包处理缓冲区
+    static uint8_t packet_buffer[RX_BUF_SIZE * 2];
+    static uint16_t buffer_pos = 0;
+    
     while (1)
     {
         const int rxBytes = uart_read_bytes(UART_NUM_1, data, RX_BUF_SIZE, 200 / portTICK_PERIOD_MS);
         if (rxBytes > 4)
         {
-            data[rxBytes] = 0;
-            ESP_LOGD(E34_2G4D20D_RX_TASK_TAG, "Read %d bytes: '%s'", rxBytes, data);
-            ESP_LOG_BUFFER_HEXDUMP(E34_2G4D20D_RX_TASK_TAG, data, rxBytes, ESP_LOG_DEBUG);
-            if (ch9434_init_end)
+            // 将新接收的数据追加到缓冲区
+            if (buffer_pos + rxBytes < sizeof(packet_buffer))
             {
-                crc32_result = calculateCRC32(data, rxBytes - 4);
-                if (data[rxBytes - 4] == ((crc32_result >> 24) & 0xFF) && data[rxBytes - 3] == ((crc32_result >> 16) & 0xFF) && data[rxBytes - 2] == ((crc32_result >> 8) & 0xFF) && data[rxBytes - 1] == (crc32_result & 0xFF))
+                memcpy(&packet_buffer[buffer_pos], data, rxBytes);
+                buffer_pos += rxBytes;
+                ESP_LOGD(E34_2G4D20D_RX_TASK_TAG, "Received %d bytes, buffer total: %d", rxBytes, buffer_pos);
+                ESP_LOG_BUFFER_HEXDUMP(E34_2G4D20D_RX_TASK_TAG, data, rxBytes, ESP_LOG_DEBUG);
+            }
+            else
+            {
+                // 缓冲区溢出，清空重新开始
+                ESP_LOGW(E34_2G4D20D_RX_TASK_TAG, "Buffer overflow, reset");
+                buffer_pos = 0;
+                continue;
+            }
+            
+            // 处理缓冲区中的完整数据包
+            while (buffer_pos >= 10) // 最小包长度：6字节帧头 + 4字节CRC
+            {
+                // 查找包头 0xE5 0x5E
+                int packet_start = -1;
+                for (int i = 0; i <= buffer_pos - 10; i++)
                 {
-                    if ((data[0] == ((PACKET_HEADER >> 8) & 0xFF)) && (data[1] == (PACKET_HEADER & 0xFF)) && (data[2] == 0x00) && (data[3] == (board_address & 0xFF)) && (data[4] == 0x00) && (data[5] == 0x02))
+                    if (packet_buffer[i] == 0xE5 && packet_buffer[i + 1] == 0x5E)
                     {
-                        for (int i = 0; i < sizeof(rfid_one_shot); ++i)
-                        {
-                            rfid_one_shot[i] = data[i + 6];
-                        }
-
-                        CH9434UARTxSetTxFIFOData(2, rfid_one_shot, sizeof(rfid_one_shot));
+                        packet_start = i;
+                        break;
                     }
-                    else if ((data[0] == ((PACKET_HEADER >> 8) & 0xFF)) && (data[1] == (PACKET_HEADER & 0xFF)) && (data[2] == 0x00) && (data[3] == (board_address & 0xFF)) && (data[4] == 0x00) && (data[5] == 0x01))
+                }
+                
+                if (packet_start == -1)
+                {
+                    // 没找到包头，清空缓冲区
+                    ESP_LOGD(E34_2G4D20D_RX_TASK_TAG, "No packet header found, clearing buffer");
+                    buffer_pos = 0;
+                    break;
+                }
+                
+                if (packet_start > 0)
+                {
+                    // 丢弃包头前的无效数据
+                    ESP_LOGD(E34_2G4D20D_RX_TASK_TAG, "Discarding %d bytes before packet header", packet_start);
+                    memmove(packet_buffer, &packet_buffer[packet_start], buffer_pos - packet_start);
+                    buffer_pos -= packet_start;
+                }
+                
+                // 检查是否有完整的数据包（尝试不同的数据长度）
+                bool packet_processed = false;
+                
+                // RFID数据包：6字节帧头 + 5字节数据 + 4字节CRC = 15字节
+                if (buffer_pos >= 15 && ch9434_init_end)
+                {
+                    // 验证CRC
+                    crc32_result = calculateCRC32(packet_buffer, 11);
+                    if (packet_buffer[11] == ((crc32_result >> 24) & 0xFF) &&
+                        packet_buffer[12] == ((crc32_result >> 16) & 0xFF) &&
+                        packet_buffer[13] == ((crc32_result >> 8) & 0xFF) &&
+                        packet_buffer[14] == (crc32_result & 0xFF))
                     {
-                        int weight_data_len = rxBytes - 4 - 6; // 去掉帧头(6字节)和CRC(4字节)
-                        if (weight_data_len > 0)
+                        // 验证帧头
+                        if (packet_buffer[0] == 0xE5 && packet_buffer[1] == 0x5E &&
+                            packet_buffer[2] == 0x00 && packet_buffer[3] == (board_address & 0xFF) &&
+                            packet_buffer[4] == 0x00 && packet_buffer[5] == 0x02)
                         {
-                            const int txBytes = uart_write_bytes(UART_NUM_2, &data[6], weight_data_len);
-                            ESP_LOGD(E34_2G4D20D_RX_TASK_TAG, "Sent weight data: %d bytes", txBytes);
-                            ESP_LOG_BUFFER_HEXDUMP(E34_2G4D20D_RX_TASK_TAG, &data[6], weight_data_len, ESP_LOG_DEBUG);
+                            ESP_LOGI(E34_2G4D20D_RX_TASK_TAG, "Valid RFID packet (15 bytes)");
+                            ESP_LOG_BUFFER_HEX(E34_2G4D20D_RX_TASK_TAG, packet_buffer, 15);
+                            
+                            for (int i = 0; i < sizeof(rfid_one_shot); ++i)
+                            {
+                                rfid_one_shot[i] = packet_buffer[i + 6];
+                            }
+                            CH9434UARTxSetTxFIFOData(2, rfid_one_shot, sizeof(rfid_one_shot));
+                            
+                            // 移除已处理的数据包
+                            memmove(packet_buffer, &packet_buffer[15], buffer_pos - 15);
+                            buffer_pos -= 15;
+                            packet_processed = true;
+                            continue;
                         }
                     }
+                }
+                
+                // 称重数据包：动态长度，尝试查找下一个包头来确定当前包长度
+                if (!packet_processed && buffer_pos >= 10 && ch9434_init_end)
+                {
+                    // 查找下一个包头位置
+                    int next_header = -1;
+                    for (int i = 2; i < buffer_pos - 1; i++)
+                    {
+                        if (packet_buffer[i] == 0xE5 && packet_buffer[i + 1] == 0x5E)
+                        {
+                            next_header = i;
+                            break;
+                        }
+                    }
+                    
+                    int packet_len = (next_header > 0) ? next_header : buffer_pos;
+                    
+                    // 确保至少有最小包长度
+                    if (packet_len >= 10)
+                    {
+                        // 验证CRC（数据长度 = 包长度 - 4字节CRC）
+                        int data_len = packet_len - 4;
+                        crc32_result = calculateCRC32(packet_buffer, data_len);
+                        
+                        if (packet_buffer[data_len] == ((crc32_result >> 24) & 0xFF) &&
+                            packet_buffer[data_len + 1] == ((crc32_result >> 16) & 0xFF) &&
+                            packet_buffer[data_len + 2] == ((crc32_result >> 8) & 0xFF) &&
+                            packet_buffer[data_len + 3] == (crc32_result & 0xFF))
+                        {
+                            // 验证帧头
+                            if (packet_buffer[0] == 0xE5 && packet_buffer[1] == 0x5E &&
+                                packet_buffer[2] == 0x00 && packet_buffer[3] == (board_address & 0xFF) &&
+                                packet_buffer[4] == 0x00 && packet_buffer[5] == 0x01)
+                            {
+                                int weight_data_len = data_len - 6; // 去掉帧头(6字节)
+                                if (weight_data_len > 0)
+                                {
+                                    ESP_LOGI(E34_2G4D20D_RX_TASK_TAG, "Valid weight packet (%d bytes)", packet_len);
+                                    ESP_LOG_BUFFER_HEX(E34_2G4D20D_RX_TASK_TAG, packet_buffer, packet_len);
+                                    
+                                    const int txBytes = uart_write_bytes(UART_NUM_2, &packet_buffer[6], weight_data_len);
+                                    ESP_LOGD(E34_2G4D20D_RX_TASK_TAG, "Sent weight data: %d bytes", txBytes);
+                                    ESP_LOG_BUFFER_HEXDUMP(E34_2G4D20D_RX_TASK_TAG, &packet_buffer[6], weight_data_len, ESP_LOG_DEBUG);
+                                }
+                                
+                                // 移除已处理的数据包
+                                memmove(packet_buffer, &packet_buffer[packet_len], buffer_pos - packet_len);
+                                buffer_pos -= packet_len;
+                                packet_processed = true;
+                                continue;
+                            }
+                        }
+                    }
+                    
+                    if (!packet_processed)
+                    {
+                        if (next_header > 0)
+                        {
+                            // CRC校验失败，丢弃到下一个包头之前的数据
+                            ESP_LOGW(E34_2G4D20D_RX_TASK_TAG, "Invalid packet, skipping to next header");
+                            memmove(packet_buffer, &packet_buffer[next_header], buffer_pos - next_header);
+                            buffer_pos -= next_header;
+                        }
+                        else
+                        {
+                            // 没有找到下一个包头，等待更多数据
+                            break;
+                        }
+                    }
+                }
+                
+                if (!packet_processed)
+                {
+                    // 没有处理任何数据包，跳出循环等待更多数据
+                    break;
                 }
             }
         }
@@ -432,6 +566,8 @@ static void ch9434_task(void *arg)
                         uart_rec_total_cnt[uart_idx] += rec_buf_cnt;
                         ESP_LOGD(CH9434_TASK_TAG, "idx:%d rec:%d total:%d", uart_idx, rec_buf_cnt,
                                  (int)uart_rec_total_cnt[uart_idx]);
+                        ESP_LOGD(CH9434_TASK_TAG, "uart_rec_buf[%d bytes]:", rec_buf_cnt);
+                        ESP_LOG_BUFFER_HEXDUMP(CH9434_TASK_TAG, uart_rec_buf, rec_buf_cnt, ESP_LOG_DEBUG);
                         // CH9434UARTxSetTxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
                         if (rec_buf_cnt >= 20)
                         {
@@ -471,6 +607,8 @@ static void ch9434_task(void *arg)
                         uart_rec_total_cnt[uart_idx] += rec_buf_cnt;
                         ESP_LOGD(CH9434_TASK_TAG, "idx:%d rec:%d total:%d", uart_idx, rec_buf_cnt,
                                  (int)uart_rec_total_cnt[uart_idx]);
+                        ESP_LOGD(CH9434_TASK_TAG, "uart_rec_buf[%d bytes]:", rec_buf_cnt);
+                        ESP_LOG_BUFFER_HEXDUMP(CH9434_TASK_TAG, uart_rec_buf, rec_buf_cnt, ESP_LOG_DEBUG);
                         // CH9434UARTxSetTxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
                         if (rec_buf_cnt >= 20)
                         {
@@ -510,6 +648,8 @@ static void ch9434_task(void *arg)
                         uart_rec_total_cnt[uart_idx] += rec_buf_cnt;
                         ESP_LOGD(CH9434_TASK_TAG, "idx:%d rec:%d total:%d", uart_idx, rec_buf_cnt,
                                  (int)uart_rec_total_cnt[uart_idx]);
+                        ESP_LOGD(CH9434_TASK_TAG, "uart_rec_buf[%d bytes]:", rec_buf_cnt);
+                        ESP_LOG_BUFFER_HEXDUMP(CH9434_TASK_TAG, uart_rec_buf, rec_buf_cnt, ESP_LOG_DEBUG);
                         // CH9434UARTxSetTxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
                         if (rec_buf_cnt >= 20)
                         {
