@@ -346,7 +346,6 @@ static void e34_2g4d20d_rx_task(void *arg)
     static const char *E34_2G4D20D_RX_TASK_TAG = "E34_2G4D20D_RX_TASK";
     esp_log_level_set(E34_2G4D20D_RX_TASK_TAG, ESP_LOG_DEBUG);
     uint8_t *data = (uint8_t *)malloc(RX_BUF_SIZE + 1);
-    uint8_t rfid_one_shot[5] = {0x04, 0xFF, 0x01, 0x1B, 0xB4};
     uint32_t crc32_result;
     
     // 粘包处理缓冲区
@@ -404,44 +403,11 @@ static void e34_2g4d20d_rx_task(void *arg)
                     buffer_pos -= packet_start;
                 }
                 
-                // 检查是否有完整的数据包（尝试不同的数据长度）
+                // 检查是否有完整的数据包
                 bool packet_processed = false;
                 
-                // RFID数据包：6字节帧头 + 5字节数据 + 4字节CRC = 15字节
-                if (buffer_pos >= 15 && ch9434_init_end)
-                {
-                    // 验证CRC
-                    crc32_result = calculateCRC32(packet_buffer, 11);
-                    if (packet_buffer[11] == ((crc32_result >> 24) & 0xFF) &&
-                        packet_buffer[12] == ((crc32_result >> 16) & 0xFF) &&
-                        packet_buffer[13] == ((crc32_result >> 8) & 0xFF) &&
-                        packet_buffer[14] == (crc32_result & 0xFF))
-                    {
-                        // 验证帧头
-                        if (packet_buffer[0] == 0xE5 && packet_buffer[1] == 0x5E &&
-                            packet_buffer[2] == 0x00 && packet_buffer[3] == (board_address & 0xFF) &&
-                            packet_buffer[4] == 0x00 && packet_buffer[5] == 0x02)
-                        {
-                            ESP_LOGI(E34_2G4D20D_RX_TASK_TAG, "Valid RFID packet (15 bytes)");
-                            ESP_LOG_BUFFER_HEX(E34_2G4D20D_RX_TASK_TAG, packet_buffer, 15);
-                            
-                            for (int i = 0; i < sizeof(rfid_one_shot); ++i)
-                            {
-                                rfid_one_shot[i] = packet_buffer[i + 6];
-                            }
-                            CH9434UARTxSetTxFIFOData(2, rfid_one_shot, sizeof(rfid_one_shot));
-                            
-                            // 移除已处理的数据包
-                            memmove(packet_buffer, &packet_buffer[15], buffer_pos - 15);
-                            buffer_pos -= 15;
-                            packet_processed = true;
-                            continue;
-                        }
-                    }
-                }
-                
-                // 称重数据包：动态长度，尝试查找下一个包头来确定当前包长度
-                if (!packet_processed && buffer_pos >= 10 && ch9434_init_end)
+                // 动态长度处理：尝试查找下一个包头来确定当前包长度
+                if (buffer_pos >= 10 && ch9434_init_end)
                 {
                     // 查找下一个包头位置
                     int next_header = -1;
@@ -468,27 +434,53 @@ static void e34_2g4d20d_rx_task(void *arg)
                             packet_buffer[data_len + 2] == ((crc32_result >> 8) & 0xFF) &&
                             packet_buffer[data_len + 3] == (crc32_result & 0xFF))
                         {
-                            // 验证帧头
+                            // 验证帧头基础部分
                             if (packet_buffer[0] == 0xE5 && packet_buffer[1] == 0x5E &&
                                 packet_buffer[2] == 0x00 && packet_buffer[3] == (board_address & 0xFF) &&
-                                packet_buffer[4] == 0x00 && packet_buffer[5] == 0x01)
+                                packet_buffer[4] == 0x00)
                             {
-                                int weight_data_len = data_len - 6; // 去掉帧头(6字节)
-                                if (weight_data_len > 0)
+                                int payload_len = data_len - 6; // 去掉帧头(6字节)
+                                
+                                if (packet_buffer[5] == 0x02 && payload_len > 0)
                                 {
+                                    // RFID数据包
+                                    ESP_LOGI(E34_2G4D20D_RX_TASK_TAG, "Valid RFID packet (%d bytes)", packet_len);
+                                    ESP_LOG_BUFFER_HEX(E34_2G4D20D_RX_TASK_TAG, packet_buffer, packet_len);
+                                    
+                                    // 动态复制RFID数据
+                                    uint8_t *rfid_data = (uint8_t *)malloc(payload_len);
+                                    if (rfid_data)
+                                    {
+                                        for (int i = 0; i < payload_len; ++i)
+                                        {
+                                            rfid_data[i] = packet_buffer[i + 6];
+                                        }
+                                        CH9434UARTxSetTxFIFOData(2, rfid_data, payload_len);
+                                        free(rfid_data);
+                                    }
+                                    
+                                    // 移除已处理的数据包
+                                    memmove(packet_buffer, &packet_buffer[packet_len], buffer_pos - packet_len);
+                                    buffer_pos -= packet_len;
+                                    packet_processed = true;
+                                    continue;
+                                }
+                                else if (packet_buffer[5] == 0x01 && payload_len > 0)
+                                {
+                                    // 称重数据包
                                     ESP_LOGI(E34_2G4D20D_RX_TASK_TAG, "Valid weight packet (%d bytes)", packet_len);
                                     ESP_LOG_BUFFER_HEX(E34_2G4D20D_RX_TASK_TAG, packet_buffer, packet_len);
                                     
-                                    const int txBytes = uart_write_bytes(UART_NUM_2, &packet_buffer[6], weight_data_len);
+                                    const int txBytes = uart_write_bytes(UART_NUM_2, &packet_buffer[6], payload_len);
                                     ESP_LOGD(E34_2G4D20D_RX_TASK_TAG, "Sent weight data: %d bytes", txBytes);
-                                    ESP_LOG_BUFFER_HEXDUMP(E34_2G4D20D_RX_TASK_TAG, &packet_buffer[6], weight_data_len, ESP_LOG_DEBUG);
+                                    ESP_LOG_BUFFER_HEXDUMP(E34_2G4D20D_RX_TASK_TAG, &packet_buffer[6], payload_len, ESP_LOG_DEBUG);
+                                    
+                                    // 移除已处理的数据包
+                                    memmove(packet_buffer, &packet_buffer[packet_len], buffer_pos - packet_len);
+                                    buffer_pos -= packet_len;
+                                    packet_processed = true;
+                                    continue;
                                 }
-                                
-                                // 移除已处理的数据包
-                                memmove(packet_buffer, &packet_buffer[packet_len], buffer_pos - packet_len);
-                                buffer_pos -= packet_len;
-                                packet_processed = true;
-                                continue;
                             }
                         }
                     }
@@ -569,7 +561,7 @@ static void ch9434_task(void *arg)
                         ESP_LOGD(CH9434_TASK_TAG, "uart_rec_buf[%d bytes]:", rec_buf_cnt);
                         ESP_LOG_BUFFER_HEXDUMP(CH9434_TASK_TAG, uart_rec_buf, rec_buf_cnt, ESP_LOG_DEBUG);
                         // CH9434UARTxSetTxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
-                        if (rec_buf_cnt >= 20)
+                        if (rec_buf_cnt >= 6)
                         {
                             packet_to_android[0] = (PACKET_HEADER >> 8) & 0xFF;
                             packet_to_android[1] = PACKET_HEADER & 0xFF;
@@ -610,7 +602,7 @@ static void ch9434_task(void *arg)
                         ESP_LOGD(CH9434_TASK_TAG, "uart_rec_buf[%d bytes]:", rec_buf_cnt);
                         ESP_LOG_BUFFER_HEXDUMP(CH9434_TASK_TAG, uart_rec_buf, rec_buf_cnt, ESP_LOG_DEBUG);
                         // CH9434UARTxSetTxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
-                        if (rec_buf_cnt >= 20)
+                        if (rec_buf_cnt >= 6)
                         {
                             packet_to_android[0] = (PACKET_HEADER >> 8) & 0xFF;
                             packet_to_android[1] = PACKET_HEADER & 0xFF;
@@ -651,7 +643,7 @@ static void ch9434_task(void *arg)
                         ESP_LOGD(CH9434_TASK_TAG, "uart_rec_buf[%d bytes]:", rec_buf_cnt);
                         ESP_LOG_BUFFER_HEXDUMP(CH9434_TASK_TAG, uart_rec_buf, rec_buf_cnt, ESP_LOG_DEBUG);
                         // CH9434UARTxSetTxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
-                        if (rec_buf_cnt >= 20)
+                        if (rec_buf_cnt >= 6)
                         {
                             packet_to_android[0] = (PACKET_HEADER >> 8) & 0xFF;
                             packet_to_android[1] = PACKET_HEADER & 0xFF;
