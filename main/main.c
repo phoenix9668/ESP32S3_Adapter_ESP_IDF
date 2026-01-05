@@ -14,7 +14,8 @@
 #include "e34_2g4d20d.h"
 
 #define TAG "MAIN"
-SemaphoreHandle_t mutex;
+SemaphoreHandle_t spi_mutex;   // 保护SPI/CH9434访问的互斥锁
+SemaphoreHandle_t uart1_mutex; // 保护UART1发送的互斥锁
 QueueHandle_t tableQueue;
 /*
  * LED pins definition
@@ -280,10 +281,11 @@ static void e34_2g4d20d_tx_task(void *arg)
                 packet_to_android[table_data.length + 7] = (crc32_result >> 16) & 0xFF;
                 packet_to_android[table_data.length + 8] = (crc32_result >> 8) & 0xFF;
                 packet_to_android[table_data.length + 9] = crc32_result & 0xFF;
-                if (xSemaphoreTake(mutex, portMAX_DELAY))
+                // 使用UART1发送，需要uart1_mutex保护
+                if (xSemaphoreTake(uart1_mutex, portMAX_DELAY))
                 {
                     e34_2g4d20d_sendData(E34_2G4D20D_TX_TASK_TAG, (char *)packet_to_android, table_data.length + 10);
-                    xSemaphoreGive(mutex);
+                    xSemaphoreGive(uart1_mutex);
                 }
             }
             else if (table_data.data[0] == 0x01 && table_data.data[1] == 0x03)
@@ -314,11 +316,11 @@ static void e34_2g4d20d_tx_task(void *arg)
                     
                     if (calculated_crc == received_crc)
                     {
-                        // CRC校验通过，转发完整的Modbus RTU数据包（包含CRC）
-                        if (xSemaphoreTake(mutex, portMAX_DELAY))
+                        // CRC校验通过，使用UART1发送，需要uart1_mutex保护
+                        if (xSemaphoreTake(uart1_mutex, portMAX_DELAY))
                         {
                             e34_2g4d20d_sendData(E34_2G4D20D_TX_TASK_TAG, (char *)modbus_packet, modbus_packet_len);
-                            xSemaphoreGive(mutex);
+                            xSemaphoreGive(uart1_mutex);
                         }
                         ESP_LOGI(E34_2G4D20D_TX_TASK_TAG, "Sent Modbus RTU data: %d bytes", modbus_packet_len);
                         ESP_LOG_BUFFER_HEXDUMP(E34_2G4D20D_TX_TASK_TAG, modbus_packet, modbus_packet_len, ESP_LOG_INFO);
@@ -444,7 +446,7 @@ static void e34_2g4d20d_rx_task(void *arg)
                                 if (packet_buffer[5] == 0x02 && payload_len > 0)
                                 {
                                     // RFID数据包
-                                    ESP_LOGI(E34_2G4D20D_RX_TASK_TAG, "Valid RFID packet (%d bytes)", packet_len);
+                                    ESP_LOGD(E34_2G4D20D_RX_TASK_TAG, "Valid RFID packet (%d bytes)", packet_len);
                                     ESP_LOG_BUFFER_HEX(E34_2G4D20D_RX_TASK_TAG, packet_buffer, packet_len);
                                     
                                     // 动态复制RFID数据
@@ -455,7 +457,13 @@ static void e34_2g4d20d_rx_task(void *arg)
                                         {
                                             rfid_data[i] = packet_buffer[i + 6];
                                         }
-                                        CH9434UARTxSetTxFIFOData(2, rfid_data, payload_len);
+                                        ESP_LOGD(E34_2G4D20D_RX_TASK_TAG, "Sending RFID data to CH9434 UART2 (%d bytes):", payload_len);
+                                        ESP_LOG_BUFFER_HEX(E34_2G4D20D_RX_TASK_TAG, rfid_data, payload_len);
+                                        if (xSemaphoreTake(spi_mutex, portMAX_DELAY))
+                                        {
+                                            CH9434UARTxSetTxFIFOData(2, rfid_data, payload_len);
+                                            xSemaphoreGive(spi_mutex);
+                                        }
                                         free(rfid_data);
                                     }
                                     
@@ -539,8 +547,11 @@ static void ch9434_task(void *arg)
     {
         if (gpio_get_level(CH9434_INT) == 0) // INT level is low
         {
-            for (uart_idx = 0; uart_idx < 4; uart_idx++)
+            // 获取SPI锁，保护整个CH9434中断处理流程
+            if (xSemaphoreTake(spi_mutex, portMAX_DELAY))
             {
+                for (uart_idx = 0; uart_idx < 4; uart_idx++)
+                {
                 uart_iir = CH9434UARTxReadIIR(uart_idx);
                 ESP_LOGD(CH9434_TASK_TAG, "idx:%d uart_iir:%02x", uart_idx, uart_iir);
                 switch (uart_iir & 0x0f)
@@ -581,10 +592,11 @@ static void ch9434_task(void *arg)
                             packet_to_android[rec_buf_cnt + 7] = (crc32_result >> 16) & 0xFF;
                             packet_to_android[rec_buf_cnt + 8] = (crc32_result >> 8) & 0xFF;
                             packet_to_android[rec_buf_cnt + 9] = crc32_result & 0xFF;
-                            if (xSemaphoreTake(mutex, portMAX_DELAY))
+                            // 发送到UART1，需要uart1_mutex保护
+                            if (xSemaphoreTake(uart1_mutex, portMAX_DELAY))
                             {
                                 e34_2g4d20d_sendData(CH9434_TASK_TAG, (char *)packet_to_android, rec_buf_cnt + 10);
-                                xSemaphoreGive(mutex);
+                                xSemaphoreGive(uart1_mutex);
                             }
                         }
                     }
@@ -622,10 +634,11 @@ static void ch9434_task(void *arg)
                             packet_to_android[rec_buf_cnt + 7] = (crc32_result >> 16) & 0xFF;
                             packet_to_android[rec_buf_cnt + 8] = (crc32_result >> 8) & 0xFF;
                             packet_to_android[rec_buf_cnt + 9] = crc32_result & 0xFF;
-                            if (xSemaphoreTake(mutex, portMAX_DELAY))
+                            // 发送到UART1，需要uart1_mutex保护
+                            if (xSemaphoreTake(uart1_mutex, portMAX_DELAY))
                             {
                                 e34_2g4d20d_sendData(CH9434_TASK_TAG, (char *)packet_to_android, rec_buf_cnt + 10);
-                                xSemaphoreGive(mutex);
+                                xSemaphoreGive(uart1_mutex);
                             }
                         }
                     }
@@ -638,10 +651,10 @@ static void ch9434_task(void *arg)
                     {
                         CH9434UARTxGetRxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
                         uart_rec_total_cnt[uart_idx] += rec_buf_cnt;
-                        ESP_LOGD(CH9434_TASK_TAG, "idx:%d rec:%d total:%d", uart_idx, rec_buf_cnt,
+                        ESP_LOGI(CH9434_TASK_TAG, "idx:%d rec:%d total:%d", uart_idx, rec_buf_cnt,
                                  (int)uart_rec_total_cnt[uart_idx]);
-                        ESP_LOGD(CH9434_TASK_TAG, "uart_rec_buf[%d bytes]:", rec_buf_cnt);
-                        ESP_LOG_BUFFER_HEXDUMP(CH9434_TASK_TAG, uart_rec_buf, rec_buf_cnt, ESP_LOG_DEBUG);
+                        ESP_LOGI(CH9434_TASK_TAG, "uart_rec_buf[%d bytes]:", rec_buf_cnt);
+                        ESP_LOG_BUFFER_HEXDUMP(CH9434_TASK_TAG, uart_rec_buf, rec_buf_cnt, ESP_LOG_INFO);
                         // CH9434UARTxSetTxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
                         if (rec_buf_cnt >= 6)
                         {
@@ -663,12 +676,19 @@ static void ch9434_task(void *arg)
                             packet_to_android[rec_buf_cnt + 7] = (crc32_result >> 16) & 0xFF;
                             packet_to_android[rec_buf_cnt + 8] = (crc32_result >> 8) & 0xFF;
                             packet_to_android[rec_buf_cnt + 9] = crc32_result & 0xFF;
-                            if (xSemaphoreTake(mutex, portMAX_DELAY))
+                            // 发送到UART1，需要uart1_mutex保护
+                            if (xSemaphoreTake(uart1_mutex, portMAX_DELAY))
                             {
                                 e34_2g4d20d_sendData(CH9434_TASK_TAG, (char *)packet_to_android, rec_buf_cnt + 10);
-                                xSemaphoreGive(mutex);
+                                xSemaphoreGive(uart1_mutex);
                             }
                         }
+                    }
+                    else
+                    {
+                        // 如果FIFO为空但有超时中断，读取LSR来清除中断状态
+                        uart_lsr = CH9434UARTxReadLSR(uart_idx);
+                        ESP_LOGD(CH9434_TASK_TAG, "idx:%d timeout with empty FIFO, lsr:%02x", uart_idx, uart_lsr);
                     }
                     break;
                 }
@@ -682,6 +702,8 @@ static void ch9434_task(void *arg)
                 }
                 }
             }
+            xSemaphoreGive(spi_mutex); // 释放SPI锁
+            }
         }
         vTaskDelay(200 / portTICK_PERIOD_MS);
     }
@@ -689,10 +711,16 @@ static void ch9434_task(void *arg)
 
 void app_main(void)
 {
-    mutex = xSemaphoreCreateMutex();
-    if (mutex == NULL)
+    spi_mutex = xSemaphoreCreateMutex();
+    if (spi_mutex == NULL)
     {
-        ESP_LOGE(TAG, "Failed to create mutex");
+        ESP_LOGE(TAG, "Failed to create spi_mutex");
+        return;
+    }
+    uart1_mutex = xSemaphoreCreateMutex();
+    if (uart1_mutex == NULL)
+    {
+        ESP_LOGE(TAG, "Failed to create uart1_mutex");
         return;
     }
     tableQueue = xQueueCreate(20, sizeof(table_data_t));
