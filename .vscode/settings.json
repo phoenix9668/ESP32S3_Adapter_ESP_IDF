@@ -2,7 +2,9 @@
   "C_Cpp.intelliSenseEngine": "default",
   "idf.portWin": "COM97",
   "idf.adapterTargetName": "esp32s3",
-  "idf.openOcdConfigs": ["board/esp32s3-builtin.cfg"],
+  "idf.openOcdConfigs": [
+    "board/esp32s3-builtin.cfg"
+  ],
   "files.associations": {
     "freertos.h": "c",
     "array": "c",
@@ -46,5 +48,10 @@
   "idf.espIdfPath": "/Users/gally/esp/v5.4.2/esp-idf",
   "idf.toolsPath": "/Users/gally/.espressif",
   "idf.port": "/dev/tty.usbmodem101",
-  "Codegeex.RepoIndex": true
+  "Codegeex.RepoIndex": true,
+  "idf.currentSetup": "/Users/gally/esp/v5.4.2/esp-idf",
+  "idf.customExtraVars": {
+    "OPENOCD_USB_ADAPTER_LOCATION": "0-1",
+    "IDF_TARGET": "esp32s3"
+  }
 }

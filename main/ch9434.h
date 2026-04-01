@@ -1,6 +1,5 @@
-/********************************** (C) COPYRIGHT *******************************
- * File Name          : CH9434.h
- * Author             : tech18
+/********************************** (C) COPYRIGHT
+ ******************************** File Name          : CH9434.h Author : tech18
  * Version            : V1.0
  * Date               : 2020/05/08
  * Description        : CH9434 header file
@@ -8,19 +7,19 @@
 
 #ifndef __CH9434_H__
 #define __CH9434_H__
-#include "driver/spi_master.h"
 #include "driver/gpio.h"
+#include "driver/spi_master.h"
 
 /*
  * CH9434 pins definition
  */
 #define CH9434_HOST SPI2_HOST
-#define PIN_NUM_MISO GPIO_NUM_14
-#define PIN_NUM_MOSI GPIO_NUM_13
-#define PIN_NUM_CLK GPIO_NUM_12
-#define PIN_NUM_CS GPIO_NUM_11
-#define CH9434_RST GPIO_NUM_47
-#define CH9434_INT GPIO_NUM_21
+#define PIN_NUM_MISO GPIO_NUM_41
+#define PIN_NUM_MOSI GPIO_NUM_40
+#define PIN_NUM_CLK GPIO_NUM_39
+#define PIN_NUM_CS GPIO_NUM_38
+#define CH9434_RST GPIO_NUM_48
+#define CH9434_INT GPIO_NUM_42
 
 /* -----------------------------------------------------------------------------
  *                               macro definition
@@ -236,7 +235,8 @@ void CH9434InitClkMode(uint8_t xt_en, uint8_t freq_mul_en, uint8_t div_num);
  * Output         : None
  * Return         : None
  */
-void CH9434UARTxParaSet(uint8_t uart_idx, uint32_t bps, uint8_t data_bits, uint8_t stop_bits, uint8_t veri_bits);
+void CH9434UARTxParaSet(uint8_t uart_idx, uint32_t bps, uint8_t data_bits,
+                        uint8_t stop_bits, uint8_t veri_bits);
 
 /*
  * Function Name  : CH9434UARTxFIFOSet
@@ -260,7 +260,8 @@ void CH9434UARTxFIFOSet(uint8_t uart_idx, uint8_t fifo_en, uint8_t fifo_level);
  * Output         : None
  * Return         : None
  */
-void CH9434UARTxIrqSet(uint8_t uart_idx, uint8_t modem, uint8_t line, uint8_t tx, uint8_t rx);
+void CH9434UARTxIrqSet(uint8_t uart_idx, uint8_t modem, uint8_t line,
+                       uint8_t tx, uint8_t rx);
 
 /*
  * Function Name  : CH9434UARTxFlowSet
@@ -356,7 +357,8 @@ uint16_t CH9434UARTxGetRxFIFOLen(uint8_t uart_idx);
  * Output         : None
  * Return         : None
  */
-uint8_t CH9434UARTxGetRxFIFOData(uint8_t uart_idx, uint8_t *p_data, uint16_t read_len);
+uint8_t CH9434UARTxGetRxFIFOData(uint8_t uart_idx, uint8_t *p_data,
+                                 uint16_t read_len);
 
 /*
  * Function Name  : CH9434UARTxGetTxFIFOLen
@@ -376,7 +378,8 @@ uint16_t CH9434UARTxGetTxFIFOLen(uint8_t uart_idx);
  * Output         : None
  * Return         : None
  */
-uint8_t CH9434UARTxSetTxFIFOData(uint8_t uart_idx, uint8_t *p_data, uint16_t send_len);
+uint8_t CH9434UARTxSetTxFIFOData(uint8_t uart_idx, uint8_t *p_data,
+                                 uint16_t send_len);
 
 /*
  * Function Name  : CH9434UARTxTnowSet
@@ -418,7 +421,8 @@ void CH9434WakeUp(void);
  * Output         : None
  * Return         : None
  */
-void CH9434GPIOFuncSet(uint8_t gpio_idx, uint8_t en, uint8_t dir, uint8_t pu, uint8_t pd);
+void CH9434GPIOFuncSet(uint8_t gpio_idx, uint8_t en, uint8_t dir, uint8_t pu,
+                       uint8_t pd);
 
 /*
  * Function Name  : CH9434GPIOPinOut
