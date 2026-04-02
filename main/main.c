@@ -23,6 +23,18 @@ QueueHandle_t tableQueue;
 #define LED_BLUE_PIN (GPIO_NUM_16)
 
 /*
+ * RS485 direction control pin definition
+ * IO47 - CH9434 UART0 (通道0)
+ * IO21 - CH9434 UART1 (通道1)
+ * IO14 - CH9434 UART2 (通道2)
+ * IO13 - CH9434 UART3 (通道3)
+ */
+#define RS485_DIR_PIN_CH0 (GPIO_NUM_47)
+#define RS485_DIR_PIN_CH1 (GPIO_NUM_21)
+#define RS485_DIR_PIN_CH2 (GPIO_NUM_14)
+#define RS485_DIR_PIN_CH3 (GPIO_NUM_13)
+
+/*
  * UART2 pins and parameters definition
  */
 #define UART2_TXD_PIN (GPIO_NUM_2)
@@ -101,6 +113,26 @@ void led_gpio_init(void) {
 
   gpio_set_level(LED_GREEN_PIN, 0);
   gpio_set_level(LED_BLUE_PIN, 0);
+}
+
+// 初始化RS485方向控制引脚，默认为接收模式（低电平）
+void rs485_dir_pin_init(void) {
+  gpio_config_t gpio_conf;
+  gpio_conf.mode = GPIO_MODE_OUTPUT;
+  // 配置所有4个通道的RS485方向控制引脚
+  gpio_conf.pin_bit_mask =
+      (1ULL << RS485_DIR_PIN_CH0) | (1ULL << RS485_DIR_PIN_CH1) |
+      (1ULL << RS485_DIR_PIN_CH2) | (1ULL << RS485_DIR_PIN_CH3);
+  gpio_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+  gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  gpio_conf.intr_type = GPIO_INTR_DISABLE;
+  gpio_config(&gpio_conf);
+
+  // 设置为低电平，使能接收模式（RE#=0, DE=0）
+  gpio_set_level(RS485_DIR_PIN_CH0, 0);
+  gpio_set_level(RS485_DIR_PIN_CH1, 0);
+  gpio_set_level(RS485_DIR_PIN_CH2, 0);
+  gpio_set_level(RS485_DIR_PIN_CH3, 0);
 }
 
 // get switch value on PCB
@@ -256,7 +288,14 @@ static void e34_2g4d20d_rx_task(void *arg) {
               rfid_one_shot[i] = data[i + 6];
             }
 
-            CH9434UARTxSetTxFIFOData(1, rfid_one_shot, sizeof(rfid_one_shot));
+            // RS485方向控制：切换为发送模式
+            gpio_set_level(RS485_DIR_PIN_CH1, 1);
+            vTaskDelay(1 / portTICK_PERIOD_MS); // 等待方向切换稳定
+            CH9434UARTxSetTxFIFOData(CH9434_UART_IDX_1, rfid_one_shot,
+                                     sizeof(rfid_one_shot));
+            vTaskDelay(10 / portTICK_PERIOD_MS); // 等待数据发送完成
+            // RS485方向控制：切换回接收模式
+            gpio_set_level(RS485_DIR_PIN_CH1, 0);
           }
         }
       }
@@ -480,6 +519,7 @@ void app_main(void) {
   }
   generate_crc32_table();
   led_gpio_init();
+  rs485_dir_pin_init();
   get_switch_value();
   e34_2g4d20d_uart1_init();
   e34_2g4d20d_gpio_init();
