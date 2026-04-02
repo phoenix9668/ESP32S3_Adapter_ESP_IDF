@@ -116,8 +116,10 @@ void get_switch_value(void) {
   gpio_conf.intr_type = GPIO_INTR_DISABLE;
   gpio_config(&gpio_conf);
 
-  board_address = (gpio_get_level(ADDR4) << 3) | (gpio_get_level(ADDR3) << 2) |
-                  (gpio_get_level(ADDR2) << 1) | gpio_get_level(ADDR1);
+  board_address =
+      (~((gpio_get_level(ADDR4) << 3) | (gpio_get_level(ADDR3) << 2) |
+         (gpio_get_level(ADDR2) << 1) | gpio_get_level(ADDR1))) &
+      0x0F;
   ESP_LOGI(SWITCH_TAG, "board_address:%02x", board_address);
   for (int i = 0; i < board_address; i++) {
     gpio_set_level(LED_GREEN_PIN, 1);
@@ -163,31 +165,9 @@ static void tx_task(void *arg) {
 
 static void rx_task(void *arg) {
   static const char *RX_TASK_TAG = "RX_TASK";
-  esp_log_level_set(RX_TASK_TAG, ESP_LOG_DEBUG);
-  uint8_t cnt = 0;
+  esp_log_level_set(RX_TASK_TAG, ESP_LOG_INFO);
   while (1) {
-    table_data_t table_data;
-    size_t from_table_rxBytes = uart_read_bytes(
-        UART_NUM_2, table_data.data, RX_BUF_SIZE, 200 / portTICK_PERIOD_MS);
-    gpio_set_level(LED_GREEN_PIN, 0);
-    if (from_table_rxBytes > 0) {
-      table_data.length = from_table_rxBytes;
-      table_data.data[table_data.length] = 0;
-      ESP_LOGD(RX_TASK_TAG, "Read %d bytes: '%s'", table_data.length,
-               table_data.data);
-      ESP_LOG_BUFFER_HEXDUMP(RX_TASK_TAG, table_data.data, table_data.length,
-                             ESP_LOG_DEBUG);
-      // Send data to queue
-      if (xQueueSend(tableQueue, &table_data, portMAX_DELAY) != pdPASS) {
-        ESP_LOGE(RX_TASK_TAG, "Failed to send data to queue");
-      }
-      cnt++;
-      if (cnt >= 5) {
-        gpio_set_level(LED_GREEN_PIN, 1);
-        cnt = 0;
-      }
-    }
-    memset(table_data.data, 0, RX_BUF_SIZE);
+    vTaskDelay(1000 / portTICK_PERIOD_MS);
   }
 }
 
@@ -204,10 +184,7 @@ static void e34_2g4d20d_tx_task(void *arg) {
   // 在开头插入包头和地址
   packet_to_android = (uint8_t *)malloc(RX_BUF_SIZE + 1);
   uint32_t crc32_result;
-  uint8_t cnt = 0;
   while (1) {
-    // e34_2g4d20d_sendData(E34_2G4D20D_TX_TASK_TAG, "Hello world",
-    // strlen("Hello world")); vTaskDelay(2000 / portTICK_PERIOD_MS);
     table_data_t table_data;
     if (xQueueReceive(tableQueue, &table_data, portMAX_DELAY) == pdPASS) {
       table_data.data[table_data.length] = 0;
@@ -220,11 +197,7 @@ static void e34_2g4d20d_tx_task(void *arg) {
            table_data.data[table_data.length - 2] == 0x0d) ||
           (table_data.data[table_data.length - 1] == 0x23 &&
            table_data.data[table_data.length - 2] == 0x2e)) {
-        cnt++;
-        if (cnt >= 5) {
-          gpio_set_level(LED_BLUE_PIN, 1);
-          cnt = 0;
-        }
+        gpio_set_level(LED_BLUE_PIN, 1);
         packet_to_android[0] = (PACKET_HEADER >> 8) & 0xFF;
         packet_to_android[1] = PACKET_HEADER & 0xFF;
         packet_to_android[2] = 0x00;
@@ -283,7 +256,7 @@ static void e34_2g4d20d_rx_task(void *arg) {
               rfid_one_shot[i] = data[i + 6];
             }
 
-            CH9434UARTxSetTxFIFOData(2, rfid_one_shot, sizeof(rfid_one_shot));
+            CH9434UARTxSetTxFIFOData(1, rfid_one_shot, sizeof(rfid_one_shot));
           }
         }
       }
@@ -302,7 +275,7 @@ static void ch9434_task(void *arg) {
                     13);           // Frequency division coefficient
   vTaskDelay(50 / portTICK_PERIOD_MS);
   // init uart0
-  CH9434UARTxInit(CH9434_UART_IDX_0, UART_BPS);
+  CH9434UARTxInit(CH9434_UART_IDX_0, UART_BPS_ID0);
   // init uart1
   CH9434UARTxInit(CH9434_UART_IDX_1, UART_BPS);
   // init uart2
@@ -332,8 +305,24 @@ static void ch9434_task(void *arg) {
             uart_rec_total_cnt[uart_idx] += rec_buf_cnt;
             ESP_LOGD(CH9434_TASK_TAG, "idx:%d rec:%d total:%d", uart_idx,
                      rec_buf_cnt, (int)uart_rec_total_cnt[uart_idx]);
-            // CH9434UARTxSetTxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
-            if (rec_buf_cnt >= 20) {
+            ESP_LOG_BUFFER_HEXDUMP(CH9434_TASK_TAG, uart_rec_buf, rec_buf_cnt,
+                                   ESP_LOG_DEBUG);
+            // 通道0数据发送到tableQueue（移植rx_task逻辑）
+            if (uart_idx == CH9434_UART_IDX_0 && rec_buf_cnt > 0) {
+              gpio_set_level(LED_GREEN_PIN, 0);
+              table_data_t table_data;
+              table_data.length =
+                  rec_buf_cnt < RX_BUF_SIZE ? rec_buf_cnt : RX_BUF_SIZE;
+              memcpy(table_data.data, uart_rec_buf, table_data.length);
+              table_data.data[table_data.length] = 0;
+              if (xQueueSend(tableQueue, &table_data, portMAX_DELAY) !=
+                  pdPASS) {
+                ESP_LOGE(CH9434_TASK_TAG, "Failed to send data to queue");
+              }
+              gpio_set_level(LED_GREEN_PIN, 1);
+            }
+            // 只有CH9434 UART通道1的数据才触发数据包封装和发送
+            if (uart_idx == CH9434_UART_IDX_1 && rec_buf_cnt >= 8) {
               packet_to_android[0] = (PACKET_HEADER >> 8) & 0xFF;
               packet_to_android[1] = PACKET_HEADER & 0xFF;
               packet_to_android[2] = 0x00;
@@ -368,8 +357,24 @@ static void ch9434_task(void *arg) {
             uart_rec_total_cnt[uart_idx] += rec_buf_cnt;
             ESP_LOGD(CH9434_TASK_TAG, "idx:%d rec:%d total:%d", uart_idx,
                      rec_buf_cnt, (int)uart_rec_total_cnt[uart_idx]);
-            // CH9434UARTxSetTxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
-            if (rec_buf_cnt >= 20) {
+            ESP_LOG_BUFFER_HEXDUMP(CH9434_TASK_TAG, uart_rec_buf, rec_buf_cnt,
+                                   ESP_LOG_DEBUG);
+            // 通道0数据发送到tableQueue（移植rx_task逻辑）
+            if (uart_idx == CH9434_UART_IDX_0 && rec_buf_cnt > 0) {
+              gpio_set_level(LED_GREEN_PIN, 0);
+              table_data_t table_data;
+              table_data.length =
+                  rec_buf_cnt < RX_BUF_SIZE ? rec_buf_cnt : RX_BUF_SIZE;
+              memcpy(table_data.data, uart_rec_buf, table_data.length);
+              table_data.data[table_data.length] = 0;
+              if (xQueueSend(tableQueue, &table_data, portMAX_DELAY) !=
+                  pdPASS) {
+                ESP_LOGE(CH9434_TASK_TAG, "Failed to send data to queue");
+              }
+              gpio_set_level(LED_GREEN_PIN, 1);
+            }
+            // 只有CH9434 UART通道1的数据才触发数据包封装和发送
+            if (uart_idx == CH9434_UART_IDX_1 && rec_buf_cnt >= 8) {
               packet_to_android[0] = (PACKET_HEADER >> 8) & 0xFF;
               packet_to_android[1] = PACKET_HEADER & 0xFF;
               packet_to_android[2] = 0x00;
@@ -404,8 +409,24 @@ static void ch9434_task(void *arg) {
             uart_rec_total_cnt[uart_idx] += rec_buf_cnt;
             ESP_LOGD(CH9434_TASK_TAG, "idx:%d rec:%d total:%d", uart_idx,
                      rec_buf_cnt, (int)uart_rec_total_cnt[uart_idx]);
-            // CH9434UARTxSetTxFIFOData(uart_idx, uart_rec_buf, rec_buf_cnt);
-            if (rec_buf_cnt >= 20) {
+            ESP_LOG_BUFFER_HEXDUMP(CH9434_TASK_TAG, uart_rec_buf, rec_buf_cnt,
+                                   ESP_LOG_DEBUG);
+            // 通道0数据发送到tableQueue（移植rx_task逻辑）
+            if (uart_idx == CH9434_UART_IDX_0 && rec_buf_cnt > 0) {
+              gpio_set_level(LED_GREEN_PIN, 0);
+              table_data_t table_data;
+              table_data.length =
+                  rec_buf_cnt < RX_BUF_SIZE ? rec_buf_cnt : RX_BUF_SIZE;
+              memcpy(table_data.data, uart_rec_buf, table_data.length);
+              table_data.data[table_data.length] = 0;
+              if (xQueueSend(tableQueue, &table_data, portMAX_DELAY) !=
+                  pdPASS) {
+                ESP_LOGE(CH9434_TASK_TAG, "Failed to send data to queue");
+              }
+              gpio_set_level(LED_GREEN_PIN, 1);
+            }
+            // 只有CH9434 UART通道1的数据才触发数据包封装和发送
+            if (uart_idx == CH9434_UART_IDX_1 && rec_buf_cnt >= 8) {
               packet_to_android[0] = (PACKET_HEADER >> 8) & 0xFF;
               packet_to_android[1] = PACKET_HEADER & 0xFF;
               packet_to_android[2] = 0x00;
@@ -416,7 +437,6 @@ static void ch9434_task(void *arg) {
               for (int i = 0; i < rec_buf_cnt; ++i) {
                 packet_to_android[i + 6] = uart_rec_buf[i];
               }
-
               crc32_result = calculateCRC32(packet_to_android, rec_buf_cnt + 6);
               // 计算并追加CRC校验码
               packet_to_android[rec_buf_cnt + 6] = (crc32_result >> 24) & 0xFF;
