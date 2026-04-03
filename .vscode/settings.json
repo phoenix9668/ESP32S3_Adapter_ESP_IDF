@@ -47,7 +47,7 @@
   "idf.pythonInstallPath": "/usr/bin/python3",
   "idf.espIdfPath": "/Users/gally/esp/v5.4.2/esp-idf",
   "idf.toolsPath": "/Users/gally/.espressif",
-  "idf.port": "/dev/tty.usbmodem101",
+  "idf.port": "/dev/tty.usbmodem1101",
   "Codegeex.RepoIndex": true,
   "idf.currentSetup": "/Users/gally/esp/v5.4.2/esp-idf",
   "idf.customExtraVars": {
