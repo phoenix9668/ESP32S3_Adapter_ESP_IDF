@@ -49,5 +49,11 @@
   "idf.espIdfPath": "/Users/gally/esp/v5.4.2/esp-idf",
   "idf.toolsPath": "/Users/gally/.espressif",
   "idf.currentSetup": "/Users/gally/esp/v5.4.2/esp-idf",
-  "idf.port": "/dev/tty.usbmodem101"
+  "idf.port": "/dev/tty.usbmodem101",
+  "clangd.path": "/Users/gally/.espressif/tools/esp-clang/esp-18.1.2_20240912/esp-clang/bin/clangd",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=**",
+    "--compile-commands-dir=/Users/gally/Library/CloudStorage/Dropbox/Git/GitHub/ESP32S3_Adapter_ESP_IDF/build"
+  ]
 }

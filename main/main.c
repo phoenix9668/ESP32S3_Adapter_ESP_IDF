@@ -224,11 +224,19 @@ static void e34_2g4d20d_tx_task(void *arg) {
                table_data.length, table_data.data);
       ESP_LOG_BUFFER_HEXDUMP(E34_2G4D20D_TX_TASK_TAG, table_data.data,
                              table_data.length, ESP_LOG_DEBUG);
+      // EZ3610/3410 称重仪表固定帧尾序列（19字节）
+      static const uint8_t ez3610_frame_tail[] = {
+          0x04, 0x1B, 0x4F, 0x61, 0x40, 0x40, 0x41, 0x40, 0x40, 0x45,
+          0x04, 0x1B, 0x4F, 0x75, 0x30, 0x36, 0x04, 0x1A, 0x04};
       if (table_data.data[table_data.length - 1] == 0x0d ||
           (table_data.data[table_data.length - 1] == 0x0a &&
            table_data.data[table_data.length - 2] == 0x0d) ||
           (table_data.data[table_data.length - 1] == 0x23 &&
-           table_data.data[table_data.length - 2] == 0x2e)) {
+           table_data.data[table_data.length - 2] == 0x2e) ||
+          (table_data.length >= sizeof(ez3610_frame_tail) &&
+           memcmp(
+               &table_data.data[table_data.length - sizeof(ez3610_frame_tail)],
+               ez3610_frame_tail, sizeof(ez3610_frame_tail)) == 0)) {
         gpio_set_level(LED_BLUE_PIN, 1);
         packet_to_android[0] = (PACKET_HEADER >> 8) & 0xFF;
         packet_to_android[1] = PACKET_HEADER & 0xFF;
