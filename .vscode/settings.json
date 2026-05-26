@@ -47,11 +47,17 @@
   "idf.pythonInstallPath": "/usr/bin/python3",
   "idf.espIdfPath": "/Users/gally/esp/v5.4.2/esp-idf",
   "idf.toolsPath": "/Users/gally/.espressif",
-  "idf.port": "/dev/tty.usbmodem1101",
+  "idf.port": "/dev/tty.usbmodem101",
   "Codegeex.RepoIndex": true,
-  "idf.currentSetup": "/Users/gally/esp/v5.4.2/esp-idf",
+  "idf.currentSetup": "/Users/gally/.espressif/v6.0.1/esp-idf",
   "idf.customExtraVars": {
     "OPENOCD_USB_ADAPTER_LOCATION": "0-1",
     "IDF_TARGET": "esp32s3"
-  }
+  },
+  "clangd.path": "/Users/gally/.espressif/tools/esp-clang/esp-18.1.2_20240912/esp-clang/bin/clangd",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=**",
+    "--compile-commands-dir=/Users/gally/Library/CloudStorage/Dropbox/Git/GitHub/ESP32S3_Adapter_ESP_IDF/build"
+  ]
 }
