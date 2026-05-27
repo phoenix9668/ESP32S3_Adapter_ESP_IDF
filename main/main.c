@@ -1,5 +1,6 @@
 #include "app_protocol.h"
 #include "board.h"
+#include "cellular_4g.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "radio_service.h"
@@ -11,6 +12,7 @@ void app_main(void) {
   app_protocol_init();
 
   ESP_ERROR_CHECK(board_init());
+  ESP_ERROR_CHECK(cellular_4g_init());
   ESP_LOGI(TAG, "boot with board address 0x%02x", board_get_address());
 
   ESP_ERROR_CHECK(serial_router_init());

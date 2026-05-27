@@ -3,6 +3,7 @@
 #include "app_config.h"
 #include "app_protocol.h"
 #include "board.h"
+#include "cellular_4g.h"
 #include "ch9434.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
@@ -23,16 +24,27 @@ typedef struct {
   uint8_t data[APP_PAYLOAD_MAX_LEN];
 } frame_accumulator_t;
 
+typedef enum {
+  SERIAL_RESPONSE_ROUTE_RADIO = 0,
+  SERIAL_RESPONSE_ROUTE_CELLULAR_4G,
+} serial_response_route_t;
+
 static const char *TAG = "SERIAL";
+
+static const uint8_t s_rfid_poll_command[] = {0x04, 0xFF, 0x01, 0x1B, 0xB4};
 
 static QueueHandle_t s_command_queue;
 static frame_accumulator_t s_weight_frame;
 static uint32_t s_uart_rx_total[APP_CH9434_UART_COUNT];
+static serial_response_route_t s_response_route[APP_CH9434_UART_COUNT];
+static TickType_t s_next_rfid_poll_tick;
 
 static void serial_router_task(void *arg);
 static void ch9434_init_uarts(void);
-static void process_pending_commands(void);
-static void write_serial_command(const serial_command_t *command);
+static bool process_pending_commands(void);
+static void poll_rfid_if_due(void);
+static void write_serial_command(const serial_command_t *command,
+                                 serial_response_route_t response_route);
 static void wait_for_tx_drain(uint8_t uart_idx, size_t bytes);
 static void process_ch9434_interrupts(void);
 static void read_uart_fifo(uint8_t uart_idx);
@@ -99,9 +111,15 @@ esp_err_t serial_router_submit_command(uint8_t uart_idx, const uint8_t *data,
 static void serial_router_task(void *arg) {
   ch9434_spi2_init();
   ch9434_init_uarts();
+  s_next_rfid_poll_tick = xTaskGetTickCount();
 
   while (true) {
-    process_pending_commands();
+    if (process_pending_commands()) {
+      s_next_rfid_poll_tick =
+          xTaskGetTickCount() + pdMS_TO_TICKS(APP_RFID_POLL_INTERVAL_MS);
+    } else {
+      poll_rfid_if_due();
+    }
 
     if (gpio_get_level(CH9434_INT) == 0) {
       process_ch9434_interrupts();
@@ -123,14 +141,34 @@ static void ch9434_init_uarts(void) {
   ESP_LOGI(TAG, "CH9434 initialized");
 }
 
-static void process_pending_commands(void) {
+static bool process_pending_commands(void) {
   serial_command_t command;
+  bool processed = false;
   while (xQueueReceive(s_command_queue, &command, 0) == pdPASS) {
-    write_serial_command(&command);
+    write_serial_command(&command, SERIAL_RESPONSE_ROUTE_RADIO);
+    processed = true;
   }
+
+  return processed;
 }
 
-static void write_serial_command(const serial_command_t *command) {
+static void poll_rfid_if_due(void) {
+  const TickType_t now = xTaskGetTickCount();
+  if ((int32_t)(now - s_next_rfid_poll_tick) < 0) {
+    return;
+  }
+
+  serial_command_t poll_command = {
+      .uart_idx = CH9434_UART_IDX_1,
+      .length = sizeof(s_rfid_poll_command),
+  };
+  memcpy(poll_command.data, s_rfid_poll_command, sizeof(s_rfid_poll_command));
+  write_serial_command(&poll_command, SERIAL_RESPONSE_ROUTE_CELLULAR_4G);
+  s_next_rfid_poll_tick = now + pdMS_TO_TICKS(APP_RFID_POLL_INTERVAL_MS);
+}
+
+static void write_serial_command(const serial_command_t *command,
+                                 serial_response_route_t response_route) {
   ESP_LOGD(TAG, "write uart%u command len=%u", command->uart_idx,
            (unsigned)command->length);
   ESP_LOG_BUFFER_HEXDUMP(TAG, command->data, command->length, ESP_LOG_DEBUG);
@@ -140,6 +178,7 @@ static void write_serial_command(const serial_command_t *command) {
 
   CH9434UARTxSetTxFIFOData(command->uart_idx, command->data,
                            (uint16_t)command->length);
+  s_response_route[command->uart_idx] = response_route;
   wait_for_tx_drain(command->uart_idx, command->length);
 
   board_rs485_set_direction(command->uart_idx, BOARD_RS485_RX);
@@ -225,6 +264,15 @@ static void handle_rx_chunk(uint8_t uart_idx, const uint8_t *data,
   }
 
   if (uart_idx == CH9434_UART_IDX_1) {
+    if (s_response_route[uart_idx] == SERIAL_RESPONSE_ROUTE_CELLULAR_4G) {
+      esp_err_t ret = cellular_4g_send(data, length);
+      if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "failed to send RFID response to 4G: %s",
+                 esp_err_to_name(ret));
+      }
+      return;
+    }
+
     esp_err_t ret =
         radio_service_send_frame(APP_FRAME_TYPE_RFID, data, length);
     if (ret != ESP_OK) {
