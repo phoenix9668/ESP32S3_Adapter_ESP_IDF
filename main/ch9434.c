@@ -38,7 +38,10 @@ static void ch9434_rst_gpio_init(void) {
   gpio_conf.intr_type = GPIO_INTR_DISABLE;
   gpio_config(&gpio_conf);
 
+  gpio_set_level(CH9434_RST, 0);
+  esp_rom_delay_us(1000);
   gpio_set_level(CH9434_RST, 1);
+  esp_rom_delay_us(10000);
 }
 
 static void ch9434_cs_gpio_init(void) {
@@ -115,19 +118,22 @@ void CH9434_SPI_SCS_OP(uint8_t byte) {
 }
 
 uint8_t spi_read_write_byte(uint8_t addr, uint8_t byte) {
-  uint8_t tx_data[2] = {addr, byte};
-  uint8_t rx_data[2] = {0};
   spi_transaction_t t;
   memset(&t, 0, sizeof(t)); // Zero out the transaction
-  t.length = 16;
-  t.tx_buffer = tx_data;
-  t.rx_buffer = rx_data;
+  t.length = 8;
+  t.flags = SPI_TRANS_USE_RXDATA;
 
   cs_low();
+
+  t.tx_buffer = &addr;
   ESP_ERROR_CHECK(spi_device_polling_transmit(spi2, &t));
+
+  t.tx_buffer = &byte;
+  ESP_ERROR_CHECK(spi_device_polling_transmit(spi2, &t));
+
   cs_high();
 
-  return rx_data[1];
+  return t.rx_data[0];
 }
 
 /* -----------------------------------------------------------------------------

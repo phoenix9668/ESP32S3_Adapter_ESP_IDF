@@ -38,6 +38,7 @@ static frame_accumulator_t s_weight_frame;
 static uint32_t s_uart_rx_total[APP_CH9434_UART_COUNT];
 static serial_response_route_t s_response_route[APP_CH9434_UART_COUNT];
 static TickType_t s_next_rfid_poll_tick;
+static uint32_t s_rfid_poll_count;
 
 static void serial_router_task(void *arg);
 static void ch9434_init_uarts(void);
@@ -163,6 +164,16 @@ static void poll_rfid_if_due(void) {
       .length = sizeof(s_rfid_poll_command),
   };
   memcpy(poll_command.data, s_rfid_poll_command, sizeof(s_rfid_poll_command));
+
+  if (s_rfid_poll_count == 0) {
+    ESP_LOGI(TAG, "RFID poll started: uart%u baud=%u interval=%ums",
+             poll_command.uart_idx, (unsigned)UART_BPS,
+             (unsigned)APP_RFID_POLL_INTERVAL_MS);
+    ESP_LOG_BUFFER_HEXDUMP(TAG, s_rfid_poll_command,
+                           sizeof(s_rfid_poll_command), ESP_LOG_INFO);
+  }
+  s_rfid_poll_count++;
+
   write_serial_command(&poll_command, SERIAL_RESPONSE_ROUTE_CELLULAR_4G);
   s_next_rfid_poll_tick = now + pdMS_TO_TICKS(APP_RFID_POLL_INTERVAL_MS);
 }
@@ -187,12 +198,22 @@ static void write_serial_command(const serial_command_t *command,
 static void wait_for_tx_drain(uint8_t uart_idx, size_t bytes) {
   const TickType_t start = xTaskGetTickCount();
   const TickType_t timeout = pdMS_TO_TICKS(APP_RS485_TX_DONE_TIMEOUT_MS);
+  uint16_t tx_fifo_len = 0;
+  bool drained = false;
 
   while ((xTaskGetTickCount() - start) < timeout) {
-    if (CH9434UARTxGetTxFIFOLen(uart_idx) == 0) {
+    tx_fifo_len = CH9434UARTxGetTxFIFOLen(uart_idx);
+    if (tx_fifo_len == 0) {
+      drained = true;
       break;
     }
     vTaskDelay(pdMS_TO_TICKS(1));
+  }
+
+  if (!drained) {
+    ESP_LOGW(TAG, "uart%u tx fifo not empty after %ums, remaining=%u",
+             uart_idx, (unsigned)APP_RS485_TX_DONE_TIMEOUT_MS,
+             (unsigned)tx_fifo_len);
   }
 
   const uint32_t bps = uart_idx == CH9434_UART_IDX_0 ? UART_BPS_ID0 : UART_BPS;
