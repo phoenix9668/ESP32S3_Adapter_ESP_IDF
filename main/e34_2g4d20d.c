@@ -6,17 +6,16 @@
 
 #include "e34_2g4d20d.h"
 #include "esp_log.h"
-#include "freertos/portmacro.h"
-#include "string.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 
 /*
  * e34_2g4d20d parameters definition
  */
 #define RX_BUF_SIZE 512
 static const char *E34_2G4D20D_TAG = "E34_2G4D20D";
-char read_parameter[4] = {0xC1, 0xC1, 0xC1, '\0'};
-char read_version[4] = {0xC3, 0xC3, 0xC3, '\0'};
-char reset_device[4] = {0xC4, 0xC4, 0xC4, '\0'};
+static const uint8_t read_parameter[] = {0xC1, 0xC1, 0xC1};
+static const uint8_t reset_device[] = {0xC4, 0xC4, 0xC4};
 
 /* -----------------------------------------------------------------------------
  *                      define E34_2G4D20D interface functions
@@ -51,10 +50,17 @@ void e34_2g4d20d_gpio_init(void) {
 
   gpio_set_level(M0, 1);
   gpio_set_level(M1, 0);
+
+  gpio_conf.mode = GPIO_MODE_INPUT;
+  gpio_conf.pin_bit_mask = (1ULL << AUX);
+  gpio_conf.pull_up_en = GPIO_PULLUP_DISABLE;
+  gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+  gpio_conf.intr_type = GPIO_INTR_DISABLE;
+  gpio_config(&gpio_conf);
 }
 
-int e34_2g4d20d_sendData(const char *logName, const char *data, int len) {
-  // const int len = strlen(data);
+int e34_2g4d20d_sendData(const char *logName, const uint8_t *data,
+                         size_t len) {
   const int txBytes = uart_write_bytes(UART_NUM_1, data, len);
   ESP_LOGD(logName, "Wrote %d bytes", txBytes);
   ESP_LOG_BUFFER_HEXDUMP(logName, data, len, ESP_LOG_DEBUG);
@@ -67,18 +73,23 @@ int e34_2g4d20d_sendData(const char *logName, const char *data, int len) {
  */
 
 void e34_2g4d20d_model_sel(modes_t mode) {
-  if (mode == HALF_DUPLEX) {
+  switch (mode) {
+  case HALF_DUPLEX:
     gpio_set_level(M0, 0);
     gpio_set_level(M1, 0);
-  } else if (mode == FULL_DUPLEX) {
+    break;
+  case FULL_DUPLEX:
     gpio_set_level(M0, 1);
     gpio_set_level(M1, 0);
-  } else if (mode == RESERVE) {
+    break;
+  case RESERVE:
     gpio_set_level(M0, 0);
     gpio_set_level(M1, 1);
-  } else if (mode == SET) {
+    break;
+  case SET:
     gpio_set_level(M0, 1);
     gpio_set_level(M1, 1);
+    break;
   }
 }
 
@@ -90,21 +101,23 @@ void e34_2g4d20d_parameter_set(char dev_head, char dev_addh, char dev_addl,
   // char dev_sped = 0x18;
   // char dev_chan = 0x00;
   // char dev_option = 0x40;
-  char set_para[7] = {dev_head, dev_addh,   dev_addl, dev_sped,
-                      dev_chan, dev_option, '\0'};
+  uint8_t set_para[] = {(uint8_t)dev_head, (uint8_t)dev_addh,
+                        (uint8_t)dev_addl, (uint8_t)dev_sped,
+                        (uint8_t)dev_chan, (uint8_t)dev_option};
   e34_2g4d20d_model_sel(SET);
-  vTaskDelay(100 / portTICK_PERIOD_MS);
-  e34_2g4d20d_sendData(E34_2G4D20D_TAG, (char *)set_para, 6);
-  vTaskDelay(1000 / portTICK_PERIOD_MS);
-  e34_2g4d20d_sendData(E34_2G4D20D_TAG, read_parameter, 3);
-  vTaskDelay(1000 / portTICK_PERIOD_MS);
+  vTaskDelay(pdMS_TO_TICKS(100));
+  e34_2g4d20d_sendData(E34_2G4D20D_TAG, set_para, sizeof(set_para));
+  vTaskDelay(pdMS_TO_TICKS(1000));
+  e34_2g4d20d_sendData(E34_2G4D20D_TAG, read_parameter,
+                       sizeof(read_parameter));
+  vTaskDelay(pdMS_TO_TICKS(1000));
   e34_2g4d20d_model_sel(FULL_DUPLEX);
 }
 
-void e34_2g4d20d_reset() {
+void e34_2g4d20d_reset(void) {
   e34_2g4d20d_model_sel(SET);
-  vTaskDelay(100 / portTICK_PERIOD_MS);
-  e34_2g4d20d_sendData(E34_2G4D20D_TAG, reset_device, 3);
-  vTaskDelay(100 / portTICK_PERIOD_MS);
+  vTaskDelay(pdMS_TO_TICKS(100));
+  e34_2g4d20d_sendData(E34_2G4D20D_TAG, reset_device, sizeof(reset_device));
+  vTaskDelay(pdMS_TO_TICKS(100));
   e34_2g4d20d_model_sel(FULL_DUPLEX);
 }

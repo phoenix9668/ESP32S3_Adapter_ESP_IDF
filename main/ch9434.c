@@ -57,7 +57,7 @@ static void ch9434_int_gpio_init(void) {
   gpio_config_t gpio_conf;
   gpio_conf.mode = GPIO_MODE_INPUT;
   gpio_conf.pin_bit_mask = (1ULL << CH9434_INT);
-  gpio_conf.pull_up_en = GPIO_PULLDOWN_DISABLE;
+  gpio_conf.pull_up_en = GPIO_PULLUP_DISABLE;
   gpio_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
   gpio_conf.intr_type = GPIO_INTR_DISABLE;
   gpio_config(&gpio_conf);
@@ -65,7 +65,7 @@ static void ch9434_int_gpio_init(void) {
 
 static void cs_high(void) { gpio_set_level(PIN_NUM_CS, 1); }
 
-static void cs_low(spi_transaction_t *t) { gpio_set_level(PIN_NUM_CS, 0); }
+static void cs_low(void) { gpio_set_level(PIN_NUM_CS, 0); }
 
 /*
  * Function Name  : spi2_init
@@ -90,16 +90,12 @@ void ch9434_spi2_init(void) {
   ret = spi_bus_initialize(CH9434_HOST, &buscfg, SPI_DMA_CH_AUTO);
   ESP_ERROR_CHECK(ret);
 
-  spi_device_interface_config_t devcfg = {// .address_bits = 8,
-                                          // .dummy_bits = 3,
-                                          .clock_speed_hz =
-                                              SPI_CLK_FREQ, // 1 MHz
-                                          .mode = 0,        // SPI mode 0
-                                          .spics_io_num = PIN_NUM_CS,
-                                          .queue_size = 1,
-                                          // .flags = SPI_DEVICE_HALFDUPLEX,
-                                          .pre_cb = cs_low,
-                                          .post_cb = NULL};
+  spi_device_interface_config_t devcfg = {
+      .clock_speed_hz = SPI_CLK_FREQ,
+      .mode = 0,
+      .spics_io_num = -1,
+      .queue_size = 1,
+  };
 
   ESP_ERROR_CHECK(spi_bus_add_device(CH9434_HOST, &devcfg, &spi2));
 
@@ -119,19 +115,19 @@ void CH9434_SPI_SCS_OP(uint8_t byte) {
 }
 
 uint8_t spi_read_write_byte(uint8_t addr, uint8_t byte) {
+  uint8_t tx_data[2] = {addr, byte};
+  uint8_t rx_data[2] = {0};
   spi_transaction_t t;
   memset(&t, 0, sizeof(t)); // Zero out the transaction
-  // t.addr = addr;
-  t.length = 8;
-  t.tx_buffer = &addr; // Data
-  t.flags = SPI_TRANS_USE_RXDATA;
-  t.user = (void *)1; // D/C needs to be set to 1
-  ESP_ERROR_CHECK(spi_device_polling_transmit(spi2, &t)); // Transmit!
-  t.tx_buffer = &byte;                                    // Data
-  ESP_ERROR_CHECK(spi_device_polling_transmit(spi2, &t)); // Transmit!
+  t.length = 16;
+  t.tx_buffer = tx_data;
+  t.rx_buffer = rx_data;
+
+  cs_low();
+  ESP_ERROR_CHECK(spi_device_polling_transmit(spi2, &t));
   cs_high();
 
-  return t.rx_data[0];
+  return rx_data[1];
 }
 
 /* -----------------------------------------------------------------------------
@@ -654,10 +650,10 @@ uint16_t CH9434UARTxGetTxFIFOLen(uint8_t uart_idx) {
  * Output         : None
  * Return         : None
  */
-uint8_t CH9434UARTxSetTxFIFOData(uint8_t uart_idx, uint8_t *p_data,
+uint8_t CH9434UARTxSetTxFIFOData(uint8_t uart_idx, const uint8_t *p_data,
                                  uint16_t send_len) {
   uint16_t i;
-  uint8_t *p_sv_data;
+  const uint8_t *p_sv_data;
   uint8_t uart_reg_add;
 
   uart_reg_add = CH9434_REG_OP_WRITE | (CH9434_UARTx_RBR_ADD + 0x10 * uart_idx);
