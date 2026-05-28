@@ -33,6 +33,10 @@ static const char *TAG = "SERIAL";
 
 static const uint8_t s_rfid_poll_command[] = {0x04, 0xFF, 0x01, 0x1B, 0xB4};
 
+#define RFID_RESPONSE_TAG_LEN_OFFSET 5U
+#define RFID_RESPONSE_TAG_DATA_OFFSET 6U
+#define RFID_RESPONSE_CRC_LEN 2U
+
 static QueueHandle_t s_command_queue;
 static frame_accumulator_t s_weight_frame;
 static uint32_t s_uart_rx_total[APP_CH9434_UART_COUNT];
@@ -51,6 +55,9 @@ static void process_ch9434_interrupts(void);
 static void read_uart_fifo(uint8_t uart_idx);
 static void handle_rx_chunk(uint8_t uart_idx, const uint8_t *data,
                             size_t length);
+static bool format_rfid_tag_for_cellular(const uint8_t *data, size_t length,
+                                         uint8_t *out, size_t out_size,
+                                         size_t *out_length);
 static void handle_weight_data(const uint8_t *data, size_t length);
 
 esp_err_t serial_router_init(void) {
@@ -286,7 +293,19 @@ static void handle_rx_chunk(uint8_t uart_idx, const uint8_t *data,
 
   if (uart_idx == CH9434_UART_IDX_1) {
     if (s_response_route[uart_idx] == SERIAL_RESPONSE_ROUTE_CELLULAR_4G) {
-      esp_err_t ret = cellular_4g_send(data, length);
+      uint8_t rfid_tag_text[APP_PAYLOAD_MAX_LEN];
+      size_t rfid_tag_text_len = 0;
+      if (!format_rfid_tag_for_cellular(data, length, rfid_tag_text,
+                                        sizeof(rfid_tag_text),
+                                        &rfid_tag_text_len)) {
+        ESP_LOGW(TAG, "drop invalid RFID response len=%u", (unsigned)length);
+        return;
+      }
+
+      ESP_LOGD(TAG, "RFID tag for 4G: %.*s",
+               (int)(rfid_tag_text_len - 2U), (const char *)rfid_tag_text);
+
+      esp_err_t ret = cellular_4g_send(rfid_tag_text, rfid_tag_text_len);
       if (ret != ESP_OK) {
         ESP_LOGW(TAG, "failed to send RFID response to 4G: %s",
                  esp_err_to_name(ret));
@@ -301,6 +320,39 @@ static void handle_rx_chunk(uint8_t uart_idx, const uint8_t *data,
                esp_err_to_name(ret));
     }
   }
+}
+
+static bool format_rfid_tag_for_cellular(const uint8_t *data, size_t length,
+                                         uint8_t *out, size_t out_size,
+                                         size_t *out_length) {
+  static const char hex_chars[] = "0123456789ABCDEF";
+
+  if (data == NULL || out == NULL || out_length == NULL ||
+      length <= RFID_RESPONSE_TAG_DATA_OFFSET + RFID_RESPONSE_CRC_LEN) {
+    return false;
+  }
+
+  const size_t tag_len = data[RFID_RESPONSE_TAG_LEN_OFFSET];
+  const size_t tag_end = RFID_RESPONSE_TAG_DATA_OFFSET + tag_len;
+  if (tag_len == 0 || tag_end + RFID_RESPONSE_CRC_LEN > length) {
+    return false;
+  }
+
+  const size_t required = tag_len * 2U + 2U;
+  if (required > out_size) {
+    return false;
+  }
+
+  size_t out_idx = 0;
+  for (size_t i = RFID_RESPONSE_TAG_DATA_OFFSET; i < tag_end; ++i) {
+    out[out_idx++] = (uint8_t)hex_chars[data[i] >> 4];
+    out[out_idx++] = (uint8_t)hex_chars[data[i] & 0x0F];
+  }
+  out[out_idx++] = '\r';
+  out[out_idx++] = '\n';
+
+  *out_length = out_idx;
+  return true;
 }
 
 static void handle_weight_data(const uint8_t *data, size_t length) {
