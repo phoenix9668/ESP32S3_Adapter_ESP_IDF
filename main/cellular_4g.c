@@ -7,6 +7,8 @@
 #include "driver/uart.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 #include <stdbool.h>
 #include <stdio.h>
@@ -30,6 +32,8 @@ static size_t s_line_length;
 static bool s_discarding_line;
 static bool s_discard_previous_cr;
 static uint32_t s_get_sequence;
+static QueueHandle_t s_rfid_ack_queue;
+static SemaphoreHandle_t s_tx_mutex;
 static portMUX_TYPE s_status_lock = portMUX_INITIALIZER_UNLOCKED;
 static cellular_4g_status_t s_status;
 
@@ -131,6 +135,16 @@ static bool cellular_4g_process_line(const char *line, size_t length) {
     ESP_LOGW(TAG, "ignored invalid 4G protocol line len=%u", (unsigned)length);
     ESP_LOG_BUFFER_HEXDUMP(TAG, line, length, ESP_LOG_DEBUG);
     return false;
+  }
+
+  if (frame.type == CELLULAR_4G_MESSAGE_ACK) {
+    if (xQueueSend(s_rfid_ack_queue, &frame.ref_seq, 0) != pdPASS) {
+      uint32_t discarded;
+      xQueueReceive(s_rfid_ack_queue, &discarded, 0);
+      xQueueSend(s_rfid_ack_queue, &frame.ref_seq, 0);
+    }
+    ESP_LOGI(TAG, "4G RFID ACK ref=%lu", (unsigned long)frame.ref_seq);
+    return true;
   }
 
   cellular_4g_store_frame(&frame);
@@ -318,6 +332,20 @@ esp_err_t cellular_4g_init(void) {
   cellular_4g_line_parser_reset();
   s_get_sequence = 0U;
   s_last_valid_frame_tick = xTaskGetTickCount();
+
+  s_rfid_ack_queue = xQueueCreate(8U, sizeof(uint32_t));
+  s_tx_mutex = xSemaphoreCreateMutex();
+  if (s_rfid_ack_queue == NULL || s_tx_mutex == NULL) {
+    if (s_rfid_ack_queue != NULL) {
+      vQueueDelete(s_rfid_ack_queue);
+      s_rfid_ack_queue = NULL;
+    }
+    if (s_tx_mutex != NULL) {
+      vSemaphoreDelete(s_tx_mutex);
+      s_tx_mutex = NULL;
+    }
+    return ESP_ERR_NO_MEM;
+  }
   s_initialized = true;
 
   const BaseType_t task_created =
@@ -345,7 +373,11 @@ esp_err_t cellular_4g_send(const uint8_t *data, size_t length) {
     return ESP_ERR_INVALID_ARG;
   }
 
+  if (xSemaphoreTake(s_tx_mutex, pdMS_TO_TICKS(1000U)) != pdTRUE) {
+    return ESP_ERR_TIMEOUT;
+  }
   const int tx_bytes = uart_write_bytes(CELLULAR_4G_UART_NUM, data, length);
+  xSemaphoreGive(s_tx_mutex);
   if (tx_bytes < 0 || (size_t)tx_bytes != length) {
     ESP_LOGW(TAG, "4G UART write incomplete: %d/%u", tx_bytes,
              (unsigned)length);
@@ -355,6 +387,37 @@ esp_err_t cellular_4g_send(const uint8_t *data, size_t length) {
   ESP_LOGD(TAG, "sent %u bytes to 4G module", (unsigned)length);
   ESP_LOG_BUFFER_HEXDUMP(TAG, data, length, ESP_LOG_DEBUG);
   return ESP_OK;
+}
+
+esp_err_t cellular_4g_send_rfid(uint32_t sequence, const uint8_t *tag,
+                                size_t length) {
+  if (tag == NULL || length == 0U || length > APP_RFID_TAG_MAX_LEN) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  char body[128];
+  const int body_length =
+      snprintf(body, sizeof(body), "$ESP,V=1,T=RFID,SEQ=%lu,TAG=%.*s",
+               (unsigned long)sequence, (int)length, (const char *)tag);
+  if (body_length < 0 || (size_t)body_length >= sizeof(body)) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+
+  const uint16_t crc = cellular_4g_protocol_crc16(body, (size_t)body_length);
+  char frame[CELLULAR_4G_PROTOCOL_MAX_FRAME_LEN];
+  const int frame_length =
+      snprintf(frame, sizeof(frame), "%s*%04X\r\n", body, crc);
+  if (frame_length < 0 || (size_t)frame_length >= sizeof(frame)) {
+    return ESP_ERR_INVALID_SIZE;
+  }
+  return cellular_4g_send((const uint8_t *)frame, (size_t)frame_length);
+}
+
+bool cellular_4g_wait_for_rfid_ack(uint32_t *sequence, TickType_t timeout) {
+  if (!s_initialized || sequence == NULL || s_rfid_ack_queue == NULL) {
+    return false;
+  }
+  return xQueueReceive(s_rfid_ack_queue, sequence, timeout) == pdPASS;
 }
 
 esp_err_t cellular_4g_request_status(void) {

@@ -15,6 +15,7 @@
 typedef enum {
   CELLULAR_4G_MESSAGE_STAT = 0,
   CELLULAR_4G_MESSAGE_EVENT,
+  CELLULAR_4G_MESSAGE_ACK,
 } cellular_4g_message_type_t;
 
 typedef struct {
@@ -31,6 +32,7 @@ typedef struct {
   int32_t last_tx_sec;
   uint8_t cause;
   char event[CELLULAR_4G_PROTOCOL_EVENT_LEN];
+  uint32_t ref_seq;
 } cellular_4g_protocol_frame_t;
 
 uint16_t cellular_4g_protocol_crc16(const char *data, size_t length);

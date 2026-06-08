@@ -11,6 +11,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "radio_service.h"
+#include "rfid_store.h"
 #include <string.h>
 
 typedef struct {
@@ -307,9 +308,9 @@ static void handle_rx_chunk(uint8_t uart_idx, const uint8_t *data,
       ESP_LOGD(TAG, "RFID tag for 4G: %.*s", (int)(rfid_tag_text_len - 2U),
                (const char *)rfid_tag_text);
 
-      esp_err_t ret = cellular_4g_send(rfid_tag_text, rfid_tag_text_len);
+      esp_err_t ret = rfid_store_enqueue(rfid_tag_text, rfid_tag_text_len - 2U);
       if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "failed to send RFID response to 4G: %s",
+        ESP_LOGE(TAG, "failed to persist RFID response: %s",
                  esp_err_to_name(ret));
       }
       return;

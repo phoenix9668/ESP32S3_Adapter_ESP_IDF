@@ -4,6 +4,7 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "radio_service.h"
+#include "rfid_store.h"
 #include "serial_router.h"
 
 static const char *TAG = "APP";
@@ -13,6 +14,7 @@ void app_main(void) {
 
   ESP_ERROR_CHECK(board_init());
   ESP_ERROR_CHECK(cellular_4g_init());
+  ESP_ERROR_CHECK(rfid_store_init());
   ESP_LOGI(TAG, "boot with board address 0x%02x", board_get_address());
 
   ESP_ERROR_CHECK(serial_router_init());

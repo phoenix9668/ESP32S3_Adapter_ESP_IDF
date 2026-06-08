@@ -18,6 +18,8 @@ enum {
   FIELD_LASTTX = 1U << 11,
   FIELD_CAUSE = 1U << 12,
   FIELD_EV = 1U << 13,
+  FIELD_REF = 1U << 14,
+  FIELD_RESULT = 1U << 15,
 };
 
 static bool parse_u32(const char *text, uint32_t *value) {
@@ -203,6 +205,8 @@ bool cellular_4g_protocol_parse(const char *line, size_t length,
         frame->type = CELLULAR_4G_MESSAGE_STAT;
       } else if (strcmp(value, "EVENT") == 0) {
         frame->type = CELLULAR_4G_MESSAGE_EVENT;
+      } else if (strcmp(value, "ACK") == 0) {
+        frame->type = CELLULAR_4G_MESSAGE_ACK;
       } else {
         return false;
       }
@@ -276,6 +280,16 @@ bool cellular_4g_protocol_parse(const char *line, size_t length,
           !copy_text(frame->event, sizeof(frame->event), value)) {
         return false;
       }
+    } else if (strcmp(key, "REF") == 0) {
+      bit = FIELD_REF;
+      if (!parse_u32(value, &frame->ref_seq)) {
+        return false;
+      }
+    } else if (strcmp(key, "RESULT") == 0) {
+      bit = FIELD_RESULT;
+      if (strcmp(value, "OK") != 0) {
+        return false;
+      }
     } else {
       continue;
     }
@@ -284,6 +298,11 @@ bool cellular_4g_protocol_parse(const char *line, size_t length,
       return false;
     }
     fields |= bit;
+  }
+
+  if (frame->type == CELLULAR_4G_MESSAGE_ACK) {
+    const uint32_t ack_required = FIELD_V | FIELD_T | FIELD_REF | FIELD_RESULT;
+    return (fields & ack_required) == ack_required;
   }
 
   const uint32_t common_required =

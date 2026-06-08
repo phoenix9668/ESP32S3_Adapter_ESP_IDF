@@ -4,6 +4,7 @@
 #include "cellular_4g_protocol.h"
 
 #include "esp_err.h"
+#include "freertos/FreeRTOS.h"
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -18,6 +19,9 @@ typedef struct {
 esp_err_t cellular_4g_init(void);
 esp_err_t cellular_4g_send(const uint8_t *data, size_t length);
 esp_err_t cellular_4g_request_status(void);
+esp_err_t cellular_4g_send_rfid(uint32_t sequence, const uint8_t *tag,
+                                size_t length);
+bool cellular_4g_wait_for_rfid_ack(uint32_t *sequence, TickType_t timeout);
 bool cellular_4g_get_status(cellular_4g_status_t *status);
 
 #endif // CELLULAR_4G_H
