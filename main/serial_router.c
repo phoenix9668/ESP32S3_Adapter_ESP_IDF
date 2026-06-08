@@ -218,9 +218,8 @@ static void wait_for_tx_drain(uint8_t uart_idx, size_t bytes) {
   }
 
   if (!drained) {
-    ESP_LOGW(TAG, "uart%u tx fifo not empty after %ums, remaining=%u",
-             uart_idx, (unsigned)APP_RS485_TX_DONE_TIMEOUT_MS,
-             (unsigned)tx_fifo_len);
+    ESP_LOGW(TAG, "uart%u tx fifo not empty after %ums, remaining=%u", uart_idx,
+             (unsigned)APP_RS485_TX_DONE_TIMEOUT_MS, (unsigned)tx_fifo_len);
   }
 
   const uint32_t bps = uart_idx == CH9434_UART_IDX_0 ? UART_BPS_ID0 : UART_BPS;
@@ -286,24 +285,27 @@ static void read_uart_fifo(uint8_t uart_idx) {
 static void handle_rx_chunk(uint8_t uart_idx, const uint8_t *data,
                             size_t length) {
   if (uart_idx == CH9434_UART_IDX_0) {
-    board_led_set(BOARD_LED_GREEN, true);
     handle_weight_data(data, length);
     return;
   }
 
   if (uart_idx == CH9434_UART_IDX_1) {
+    uint8_t rfid_tag_text[APP_PAYLOAD_MAX_LEN];
+    size_t rfid_tag_text_len = 0;
+    const bool valid_rfid_tag = format_rfid_tag_for_cellular(
+        data, length, rfid_tag_text, sizeof(rfid_tag_text), &rfid_tag_text_len);
+    if (valid_rfid_tag) {
+      board_blue_led_pulse(APP_RFID_LED_PULSE_MS);
+    }
+
     if (s_response_route[uart_idx] == SERIAL_RESPONSE_ROUTE_CELLULAR_4G) {
-      uint8_t rfid_tag_text[APP_PAYLOAD_MAX_LEN];
-      size_t rfid_tag_text_len = 0;
-      if (!format_rfid_tag_for_cellular(data, length, rfid_tag_text,
-                                        sizeof(rfid_tag_text),
-                                        &rfid_tag_text_len)) {
+      if (!valid_rfid_tag) {
         ESP_LOGW(TAG, "drop invalid RFID response len=%u", (unsigned)length);
         return;
       }
 
-      ESP_LOGD(TAG, "RFID tag for 4G: %.*s",
-               (int)(rfid_tag_text_len - 2U), (const char *)rfid_tag_text);
+      ESP_LOGD(TAG, "RFID tag for 4G: %.*s", (int)(rfid_tag_text_len - 2U),
+               (const char *)rfid_tag_text);
 
       esp_err_t ret = cellular_4g_send(rfid_tag_text, rfid_tag_text_len);
       if (ret != ESP_OK) {
@@ -313,8 +315,7 @@ static void handle_rx_chunk(uint8_t uart_idx, const uint8_t *data,
       return;
     }
 
-    esp_err_t ret =
-        radio_service_send_frame(APP_FRAME_TYPE_RFID, data, length);
+    esp_err_t ret = radio_service_send_frame(APP_FRAME_TYPE_RFID, data, length);
     if (ret != ESP_OK) {
       ESP_LOGW(TAG, "failed to enqueue RFID response: %s",
                esp_err_to_name(ret));
@@ -369,12 +370,10 @@ static void handle_weight_data(const uint8_t *data, size_t length) {
       continue;
     }
 
-    esp_err_t ret = radio_service_send_frame(APP_FRAME_TYPE_WEIGHT,
-                                             s_weight_frame.data,
-                                             s_weight_frame.length);
+    esp_err_t ret = radio_service_send_frame(
+        APP_FRAME_TYPE_WEIGHT, s_weight_frame.data, s_weight_frame.length);
     if (ret != ESP_OK) {
-      ESP_LOGW(TAG, "failed to enqueue weight frame: %s",
-               esp_err_to_name(ret));
+      ESP_LOGW(TAG, "failed to enqueue weight frame: %s", esp_err_to_name(ret));
     }
     s_weight_frame.length = 0;
   }

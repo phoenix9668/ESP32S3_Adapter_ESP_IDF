@@ -3,6 +3,7 @@
 #include "app_config.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -24,6 +25,12 @@ static const gpio_num_t s_rs485_dir_pins[APP_CH9434_UART_COUNT] = {
 };
 
 static uint8_t s_board_address;
+static esp_timer_handle_t s_blue_led_timer;
+
+static void blue_led_timer_callback(void *arg) {
+  (void)arg;
+  board_led_set(BOARD_LED_BLUE, false);
+}
 
 static esp_err_t configure_leds(void) {
   const gpio_config_t gpio_conf = {
@@ -41,7 +48,12 @@ static esp_err_t configure_leds(void) {
 
   board_led_set(BOARD_LED_GREEN, false);
   board_led_set(BOARD_LED_BLUE, false);
-  return ESP_OK;
+
+  const esp_timer_create_args_t timer_args = {
+      .callback = blue_led_timer_callback,
+      .name = "blue_led",
+  };
+  return esp_timer_create(&timer_args, &s_blue_led_timer);
 }
 
 static esp_err_t configure_rs485_dir_pins(void) {
@@ -73,8 +85,7 @@ static esp_err_t configure_rs485_dir_pins(void) {
 static esp_err_t read_address_switch(void) {
   const gpio_config_t gpio_conf = {
       .pin_bit_mask =
-          (1ULL << ADDR1) | (1ULL << ADDR2) | (1ULL << ADDR3) |
-          (1ULL << ADDR4),
+          (1ULL << ADDR1) | (1ULL << ADDR2) | (1ULL << ADDR3) | (1ULL << ADDR4),
       .mode = GPIO_MODE_INPUT,
       .pull_up_en = GPIO_PULLUP_DISABLE,
       .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -87,8 +98,7 @@ static esp_err_t read_address_switch(void) {
   }
 
   s_board_address =
-      (uint8_t)(~((gpio_get_level(ADDR4) << 3) |
-                  (gpio_get_level(ADDR3) << 2) |
+      (uint8_t)(~((gpio_get_level(ADDR4) << 3) | (gpio_get_level(ADDR3) << 2) |
                   (gpio_get_level(ADDR2) << 1) | gpio_get_level(ADDR1)) &
                 0x0F);
 
@@ -132,6 +142,19 @@ uint8_t board_get_address(void) { return s_board_address; }
 void board_led_set(board_led_t led, bool on) {
   gpio_num_t pin = led == BOARD_LED_BLUE ? LED_BLUE_PIN : LED_GREEN_PIN;
   gpio_set_level(pin, on ? 1 : 0);
+}
+
+void board_blue_led_pulse(uint32_t duration_ms) {
+  if (s_blue_led_timer == NULL || duration_ms == 0U) {
+    return;
+  }
+
+  board_led_set(BOARD_LED_BLUE, true);
+  if (esp_timer_is_active(s_blue_led_timer)) {
+    ESP_ERROR_CHECK_WITHOUT_ABORT(esp_timer_stop(s_blue_led_timer));
+  }
+  ESP_ERROR_CHECK_WITHOUT_ABORT(
+      esp_timer_start_once(s_blue_led_timer, (uint64_t)duration_ms * 1000U));
 }
 
 void board_rs485_set_direction(uint8_t channel, board_rs485_dir_t direction) {

@@ -75,8 +75,7 @@ esp_err_t radio_service_start(uint8_t board_address) {
 }
 
 esp_err_t radio_service_send_frame(app_frame_type_t type,
-                                   const uint8_t *payload,
-                                   size_t payload_len) {
+                                   const uint8_t *payload, size_t payload_len) {
   if (s_tx_queue == NULL) {
     return ESP_ERR_INVALID_STATE;
   }
@@ -124,12 +123,10 @@ static void radio_tx_task(void *arg) {
              (unsigned)item.length, (unsigned)packet_len);
     ESP_LOG_BUFFER_HEXDUMP(TAG, packet, packet_len, ESP_LOG_DEBUG);
 
-    board_led_set(BOARD_LED_BLUE, true);
     if (xSemaphoreTake(s_uart_mutex, portMAX_DELAY) == pdTRUE) {
       e34_2g4d20d_sendData(TAG, packet, packet_len);
       xSemaphoreGive(s_uart_mutex);
     }
-    board_led_set(BOARD_LED_BLUE, false);
   }
 }
 
@@ -158,9 +155,8 @@ static void radio_rx_task(void *arg) {
       continue;
     }
 
-    esp_err_t ret = serial_router_submit_command(CH9434_UART_IDX_1,
-                                                 packet.payload,
-                                                 packet.payload_len);
+    esp_err_t ret = serial_router_submit_command(
+        CH9434_UART_IDX_1, packet.payload, packet.payload_len);
     if (ret != ESP_OK) {
       ESP_LOGW(TAG, "failed to enqueue serial command: %s",
                esp_err_to_name(ret));

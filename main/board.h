@@ -18,6 +18,7 @@ typedef enum {
 esp_err_t board_init(void);
 uint8_t board_get_address(void);
 void board_led_set(board_led_t led, bool on);
+void board_blue_led_pulse(uint32_t duration_ms);
 void board_rs485_set_direction(uint8_t channel, board_rs485_dir_t direction);
 
 #endif // BOARD_H
