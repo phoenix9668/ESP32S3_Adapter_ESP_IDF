@@ -19,7 +19,7 @@
 #define CELLULAR_4G_RX_FRAME_BUF_SIZE 128
 
 static const char *TAG = "CELLULAR_4G";
-static const uint8_t s_heartbeat_pattern[] = "EG800K_HEARTBEAT\r\n";
+static const uint8_t s_heartbeat_pattern[] = "EG800K_HEARTBEAT";
 
 static bool s_initialized;
 static TickType_t s_last_heartbeat_tick;
@@ -67,18 +67,25 @@ static esp_err_t cellular_4g_enable_gpio_init(void) {
     return ret;
   }
 
-  return gpio_set_level(CELLULAR_4G_EN_PIN, 1);
+  ret = gpio_set_level(CELLULAR_4G_EN_PIN, 1);
+  if (ret == ESP_OK) {
+    ESP_LOGI(TAG, "4G EN gpio=%d set high", CELLULAR_4G_EN_PIN);
+  }
+
+  return ret;
 }
 
 static void cellular_4g_restart(void) {
-  ESP_LOGW(TAG, "4G heartbeat timeout, toggling EN gpio=%d",
-           CELLULAR_4G_EN_PIN);
+  ESP_LOGW(TAG, "4G heartbeat timeout after %u ms, toggling EN gpio=%d",
+           APP_CELLULAR_HEARTBEAT_TIMEOUT_MS, CELLULAR_4G_EN_PIN);
 
   ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(CELLULAR_4G_EN_PIN, 0));
+  ESP_LOGW(TAG, "4G EN gpio=%d set low", CELLULAR_4G_EN_PIN);
   vTaskDelay(pdMS_TO_TICKS(APP_CELLULAR_RESTART_LOW_MS));
   uart_flush_input(CELLULAR_4G_UART_NUM);
   s_heartbeat_match_len = 0;
   ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(CELLULAR_4G_EN_PIN, 1));
+  ESP_LOGW(TAG, "4G EN gpio=%d set high", CELLULAR_4G_EN_PIN);
 }
 
 static void cellular_4g_rx_watchdog_task(void *arg) {
