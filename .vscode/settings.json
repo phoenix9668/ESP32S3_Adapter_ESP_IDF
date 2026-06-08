@@ -1,10 +1,9 @@
 {
   "C_Cpp.intelliSenseEngine": "default",
-  "idf.portWin": "COM97",
+  "idf.portWin": "COM9",
   "idf.adapterTargetName": "esp32s3",
   "idf.openOcdConfigs": [
-    "interface/ftdi/esp32_devkitj_v1.cfg",
-    "target/esp32s3.cfg"
+    "board/esp32s3-builtin.cfg"
   ],
   "files.associations": {
     "freertos.h": "c",
@@ -48,12 +47,15 @@
   "idf.pythonInstallPath": "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3",
   "idf.espIdfPath": "/Users/gally/esp/v5.4.2/esp-idf",
   "idf.toolsPath": "/Users/gally/.espressif",
-  "idf.currentSetup": "/Users/gally/esp/v5.4.2/esp-idf",
-  "idf.port": "/dev/tty.usbmodem101",
-  "clangd.path": "/Users/gally/.espressif/tools/esp-clang/esp-18.1.2_20240912/esp-clang/bin/clangd",
+  "idf.currentSetup": "C:\\esp\\v5.5.4\\esp-idf",
+  "idf.port": "/dev/tty.usbmodem1301",
+  "clangd.path": "/Users/gally/.espressif/tools/esp-clang/esp-19.1.2_20250312/esp-clang/bin/clangd",
   "clangd.arguments": [
     "--background-index",
     "--query-driver=**",
     "--compile-commands-dir=/Users/gally/Library/CloudStorage/Dropbox/Git/GitHub/ESP32S3_Adapter_ESP_IDF/build"
-  ]
+  ],
+  "idf.customExtraVars": {
+    "IDF_TARGET": "esp32s3"
+  }
 }
