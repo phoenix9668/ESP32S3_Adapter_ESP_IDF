@@ -11,6 +11,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "radio_service.h"
+#include "rfid_response.h"
 #include "rfid_store.h"
 #include <string.h>
 
@@ -30,16 +31,21 @@ typedef enum {
   SERIAL_RESPONSE_ROUTE_CELLULAR_4G,
 } serial_response_route_t;
 
+typedef struct {
+  size_t length;
+  size_t expected_length;
+  TickType_t last_rx_tick;
+  serial_response_route_t response_route;
+  uint8_t data[RFID_RESPONSE_MAX_FRAME_LEN];
+} rfid_frame_accumulator_t;
+
 static const char *TAG = "SERIAL";
 
 static const uint8_t s_rfid_poll_command[] = {0x04, 0xFF, 0x01, 0x1B, 0xB4};
 
-#define RFID_RESPONSE_TAG_LEN_OFFSET 5U
-#define RFID_RESPONSE_TAG_DATA_OFFSET 6U
-#define RFID_RESPONSE_CRC_LEN 2U
-
 static QueueHandle_t s_command_queue;
 static frame_accumulator_t s_weight_frame;
+static rfid_frame_accumulator_t s_rfid_frame;
 static uint32_t s_uart_rx_total[APP_CH9434_UART_COUNT];
 static serial_response_route_t s_response_route[APP_CH9434_UART_COUNT];
 static TickType_t s_next_rfid_poll_tick;
@@ -56,9 +62,11 @@ static void process_ch9434_interrupts(void);
 static void read_uart_fifo(uint8_t uart_idx);
 static void handle_rx_chunk(uint8_t uart_idx, const uint8_t *data,
                             size_t length);
-static bool format_rfid_tag_for_cellular(const uint8_t *data, size_t length,
-                                         uint8_t *out, size_t out_size,
-                                         size_t *out_length);
+static void handle_rfid_data(const uint8_t *data, size_t length);
+static void handle_rfid_frame(const uint8_t *data, size_t length,
+                              serial_response_route_t response_route);
+static void enqueue_rfid_tags(const rfid_response_t *response);
+static void format_rfid_tag(const uint8_t *tag, uint8_t *out);
 static void handle_weight_data(const uint8_t *data, size_t length);
 
 esp_err_t serial_router_init(void) {
@@ -291,70 +299,99 @@ static void handle_rx_chunk(uint8_t uart_idx, const uint8_t *data,
   }
 
   if (uart_idx == CH9434_UART_IDX_1) {
-    uint8_t rfid_tag_text[APP_PAYLOAD_MAX_LEN];
-    size_t rfid_tag_text_len = 0;
-    const bool valid_rfid_tag = format_rfid_tag_for_cellular(
-        data, length, rfid_tag_text, sizeof(rfid_tag_text), &rfid_tag_text_len);
-    if (valid_rfid_tag) {
-      board_blue_led_pulse(APP_RFID_LED_PULSE_MS);
+    handle_rfid_data(data, length);
+  }
+}
+
+static void handle_rfid_data(const uint8_t *data, size_t length) {
+  const TickType_t now = xTaskGetTickCount();
+  if (s_rfid_frame.length > 0U &&
+      now - s_rfid_frame.last_rx_tick >=
+          pdMS_TO_TICKS(APP_RFID_RESPONSE_TIMEOUT_MS)) {
+    ESP_LOGW(TAG, "discard timed-out RFID frame len=%u expected=%u",
+             (unsigned)s_rfid_frame.length,
+             (unsigned)s_rfid_frame.expected_length);
+    s_rfid_frame.length = 0U;
+    s_rfid_frame.expected_length = 0U;
+  }
+
+  for (size_t i = 0U; i < length; ++i) {
+    if (s_rfid_frame.length == 0U) {
+      s_rfid_frame.expected_length = (size_t)data[i] + 1U;
+      s_rfid_frame.response_route = s_response_route[CH9434_UART_IDX_1];
+      if (s_rfid_frame.expected_length < 7U ||
+          s_rfid_frame.expected_length > sizeof(s_rfid_frame.data)) {
+        ESP_LOGW(TAG, "discard RFID frame with invalid declared len=%u",
+                 (unsigned)s_rfid_frame.expected_length);
+        s_rfid_frame.expected_length = 0U;
+        continue;
+      }
     }
 
-    if (s_response_route[uart_idx] == SERIAL_RESPONSE_ROUTE_CELLULAR_4G) {
-      if (!valid_rfid_tag) {
-        ESP_LOGW(TAG, "drop invalid RFID response len=%u", (unsigned)length);
-        return;
-      }
-
-      ESP_LOGD(TAG, "RFID tag for 4G: %.*s", (int)(rfid_tag_text_len - 2U),
-               (const char *)rfid_tag_text);
-
-      esp_err_t ret = rfid_store_enqueue(rfid_tag_text, rfid_tag_text_len - 2U);
-      if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "failed to persist RFID response: %s",
-                 esp_err_to_name(ret));
-      }
-      return;
+    s_rfid_frame.data[s_rfid_frame.length++] = data[i];
+    s_rfid_frame.last_rx_tick = now;
+    if (s_rfid_frame.length < s_rfid_frame.expected_length) {
+      continue;
     }
 
+    handle_rfid_frame(s_rfid_frame.data, s_rfid_frame.length,
+                      s_rfid_frame.response_route);
+    s_rfid_frame.length = 0U;
+    s_rfid_frame.expected_length = 0U;
+  }
+}
+
+static void handle_rfid_frame(const uint8_t *data, size_t length,
+                              serial_response_route_t response_route) {
+  if (response_route == SERIAL_RESPONSE_ROUTE_RADIO) {
     esp_err_t ret = radio_service_send_frame(APP_FRAME_TYPE_RFID, data, length);
     if (ret != ESP_OK) {
       ESP_LOGW(TAG, "failed to enqueue RFID response: %s",
                esp_err_to_name(ret));
     }
+    return;
+  }
+
+  rfid_response_t response;
+  if (!rfid_response_parse(data, length, &response)) {
+    ESP_LOGW(TAG, "drop invalid RFID response len=%u", (unsigned)length);
+    return;
+  }
+
+  if (response.count == 0U) {
+    ESP_LOGD(TAG, "RFID response contains no tags");
+    return;
+  }
+
+  board_blue_led_pulse(APP_RFID_LED_PULSE_MS);
+  ESP_LOGD(TAG, "RFID response tags=%u", response.count);
+  enqueue_rfid_tags(&response);
+}
+
+static void enqueue_rfid_tags(const rfid_response_t *response) {
+  uint8_t tag_text[RFID_RESPONSE_TAG_UPLOAD_LEN * 2U];
+
+  for (uint8_t tag_index = 0U; tag_index < response->count; ++tag_index) {
+    format_rfid_tag(response->tags[tag_index], tag_text);
+    ESP_LOGD(TAG, "RFID tag %u/%u for 4G: %.*s", tag_index + 1U,
+             response->count, (int)sizeof(tag_text), (const char *)tag_text);
+
+    const esp_err_t ret = rfid_store_enqueue(tag_text, sizeof(tag_text));
+    if (ret != ESP_OK) {
+      ESP_LOGE(TAG, "failed to persist RFID tag %u/%u: %s", tag_index + 1U,
+               response->count, esp_err_to_name(ret));
+    }
   }
 }
 
-static bool format_rfid_tag_for_cellular(const uint8_t *data, size_t length,
-                                         uint8_t *out, size_t out_size,
-                                         size_t *out_length) {
+static void format_rfid_tag(const uint8_t *tag, uint8_t *out) {
   static const char hex_chars[] = "0123456789ABCDEF";
 
-  if (data == NULL || out == NULL || out_length == NULL ||
-      length <= RFID_RESPONSE_TAG_DATA_OFFSET + RFID_RESPONSE_CRC_LEN) {
-    return false;
-  }
-
-  const size_t tag_len = data[RFID_RESPONSE_TAG_LEN_OFFSET];
-  const size_t tag_end = RFID_RESPONSE_TAG_DATA_OFFSET + tag_len;
-  if (tag_len == 0 || tag_end + RFID_RESPONSE_CRC_LEN > length) {
-    return false;
-  }
-
-  const size_t required = tag_len * 2U + 2U;
-  if (required > out_size) {
-    return false;
-  }
-
   size_t out_idx = 0;
-  for (size_t i = RFID_RESPONSE_TAG_DATA_OFFSET; i < tag_end; ++i) {
-    out[out_idx++] = (uint8_t)hex_chars[data[i] >> 4];
-    out[out_idx++] = (uint8_t)hex_chars[data[i] & 0x0F];
+  for (size_t i = 0U; i < RFID_RESPONSE_TAG_UPLOAD_LEN; ++i) {
+    out[out_idx++] = (uint8_t)hex_chars[tag[i] >> 4];
+    out[out_idx++] = (uint8_t)hex_chars[tag[i] & 0x0F];
   }
-  out[out_idx++] = '\r';
-  out[out_idx++] = '\n';
-
-  *out_length = out_idx;
-  return true;
 }
 
 static void handle_weight_data(const uint8_t *data, size_t length) {
