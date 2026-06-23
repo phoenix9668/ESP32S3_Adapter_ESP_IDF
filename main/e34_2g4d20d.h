@@ -6,8 +6,12 @@
 
 #ifndef __E34_2G4D20D_H__
 #define __E34_2G4D20D_H__
+
 #include "driver/gpio.h"
 #include "driver/uart.h"
+#include "esp_err.h"
+#include <stddef.h>
+#include <stdint.h>
 
 /*
  * e34_2g4d20d pins definition
@@ -32,9 +36,10 @@ typedef enum { HALF_DUPLEX = 0, FULL_DUPLEX = 1, RESERVE = 2, SET = 3 } modes_t;
  * -----------------------------------------------------------------------------
  */
 
-void e34_2g4d20d_uart1_init(void);
-void e34_2g4d20d_gpio_init(void);
-int e34_2g4d20d_sendData(const char *logName, const char *data, int len);
+esp_err_t e34_2g4d20d_uart1_init(void);
+esp_err_t e34_2g4d20d_gpio_init(void);
+esp_err_t e34_2g4d20d_wait_aux(uint32_t timeout_ms);
+int e34_2g4d20d_sendData(const char *logName, const uint8_t *data, size_t len);
 
 /* -----------------------------------------------------------------------------
  *                                  api function
@@ -42,8 +47,9 @@ int e34_2g4d20d_sendData(const char *logName, const char *data, int len);
  */
 
 void e34_2g4d20d_model_sel(modes_t mode);
-void e34_2g4d20d_parameter_set(char dev_head, char dev_addh, char dev_addl,
-                               char dev_sped, char dev_chan, char dev_option);
-void e34_2g4d20d_reset();
+esp_err_t e34_2g4d20d_parameter_set(uint8_t dev_head, uint8_t dev_addh,
+                                    uint8_t dev_addl, uint8_t dev_sped,
+                                    uint8_t dev_chan, uint8_t dev_option);
+esp_err_t e34_2g4d20d_reset(void);
 
 #endif /*__E34_2G4D20D_H__ */

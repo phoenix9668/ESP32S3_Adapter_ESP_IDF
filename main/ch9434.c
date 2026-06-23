@@ -76,7 +76,6 @@ static void cs_low(spi_transaction_t *t) { gpio_set_level(PIN_NUM_CS, 0); }
  */
 void ch9434_spi2_init(void) {
   esp_err_t ret;
-  esp_log_level_set(CH9434_TAG, ESP_LOG_INFO);
   ESP_LOGI(CH9434_TAG, "Initializing bus SPI%d...", CH9434_HOST + 1);
   spi_bus_config_t buscfg = {
       .miso_io_num = PIN_NUM_MISO,
@@ -654,10 +653,10 @@ uint16_t CH9434UARTxGetTxFIFOLen(uint8_t uart_idx) {
  * Output         : None
  * Return         : None
  */
-uint8_t CH9434UARTxSetTxFIFOData(uint8_t uart_idx, uint8_t *p_data,
+uint8_t CH9434UARTxSetTxFIFOData(uint8_t uart_idx, const uint8_t *p_data,
                                  uint16_t send_len) {
   uint16_t i;
-  uint8_t *p_sv_data;
+  const uint8_t *p_sv_data;
   uint8_t uart_reg_add;
 
   uart_reg_add = CH9434_REG_OP_WRITE | (CH9434_UARTx_RBR_ADD + 0x10 * uart_idx);

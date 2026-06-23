@@ -379,7 +379,7 @@ uint16_t CH9434UARTxGetTxFIFOLen(uint8_t uart_idx);
  * Output         : None
  * Return         : None
  */
-uint8_t CH9434UARTxSetTxFIFOData(uint8_t uart_idx, uint8_t *p_data,
+uint8_t CH9434UARTxSetTxFIFOData(uint8_t uart_idx, const uint8_t *p_data,
                                  uint16_t send_len);
 
 /*
