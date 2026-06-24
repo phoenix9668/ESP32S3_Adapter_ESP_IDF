@@ -271,7 +271,13 @@ static void handle_weight_data(const uint8_t *data, size_t length) {
 
   for (size_t i = 0U; i < length; ++i) {
     if (s_weight_frame.length >= APP_PAYLOAD_MAX_LEN) {
-      ESP_LOGW(TAG, "drop oversized channel0 frame");
+      const size_t dump_len =
+          s_weight_frame.length > 64U ? 64U : s_weight_frame.length;
+      ESP_LOGW(TAG, "drop oversized channel0 frame len=%u tail_dump=%u",
+               (unsigned)s_weight_frame.length, (unsigned)dump_len);
+      ESP_LOG_BUFFER_HEXDUMP(
+          TAG, &s_weight_frame.data[s_weight_frame.length - dump_len], dump_len,
+          ESP_LOG_WARN);
       s_weight_frame.length = 0U;
     }
 

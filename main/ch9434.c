@@ -38,7 +38,10 @@ static void ch9434_rst_gpio_init(void) {
   gpio_conf.intr_type = GPIO_INTR_DISABLE;
   gpio_config(&gpio_conf);
 
+  gpio_set_level(CH9434_RST, 0);
+  esp_rom_delay_us(1000);
   gpio_set_level(CH9434_RST, 1);
+  esp_rom_delay_us(10000);
 }
 
 static void ch9434_cs_gpio_init(void) {
@@ -65,7 +68,7 @@ static void ch9434_int_gpio_init(void) {
 
 static void cs_high(void) { gpio_set_level(PIN_NUM_CS, 1); }
 
-static void cs_low(spi_transaction_t *t) { gpio_set_level(PIN_NUM_CS, 0); }
+static void cs_low(void) { gpio_set_level(PIN_NUM_CS, 0); }
 
 /*
  * Function Name  : spi2_init
@@ -89,16 +92,12 @@ void ch9434_spi2_init(void) {
   ret = spi_bus_initialize(CH9434_HOST, &buscfg, SPI_DMA_CH_AUTO);
   ESP_ERROR_CHECK(ret);
 
-  spi_device_interface_config_t devcfg = {// .address_bits = 8,
-                                          // .dummy_bits = 3,
-                                          .clock_speed_hz =
-                                              SPI_CLK_FREQ, // 1 MHz
-                                          .mode = 0,        // SPI mode 0
-                                          .spics_io_num = PIN_NUM_CS,
-                                          .queue_size = 1,
-                                          // .flags = SPI_DEVICE_HALFDUPLEX,
-                                          .pre_cb = cs_low,
-                                          .post_cb = NULL};
+  spi_device_interface_config_t devcfg = {
+      .clock_speed_hz = SPI_CLK_FREQ,
+      .mode = 0,
+      .spics_io_num = -1,
+      .queue_size = 1,
+  };
 
   ESP_ERROR_CHECK(spi_bus_add_device(CH9434_HOST, &devcfg, &spi2));
 
@@ -120,14 +119,17 @@ void CH9434_SPI_SCS_OP(uint8_t byte) {
 uint8_t spi_read_write_byte(uint8_t addr, uint8_t byte) {
   spi_transaction_t t;
   memset(&t, 0, sizeof(t)); // Zero out the transaction
-  // t.addr = addr;
   t.length = 8;
-  t.tx_buffer = &addr; // Data
   t.flags = SPI_TRANS_USE_RXDATA;
-  t.user = (void *)1; // D/C needs to be set to 1
-  ESP_ERROR_CHECK(spi_device_polling_transmit(spi2, &t)); // Transmit!
-  t.tx_buffer = &byte;                                    // Data
-  ESP_ERROR_CHECK(spi_device_polling_transmit(spi2, &t)); // Transmit!
+
+  cs_low();
+
+  t.tx_buffer = &addr;
+  ESP_ERROR_CHECK(spi_device_polling_transmit(spi2, &t));
+
+  t.tx_buffer = &byte;
+  ESP_ERROR_CHECK(spi_device_polling_transmit(spi2, &t));
+
   cs_high();
 
   return t.rx_data[0];
