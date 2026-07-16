@@ -1,0 +1,70 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="720" viewBox="0 0 1200 720">
+  <defs>
+    <style>
+      .wire { stroke:#17324d; stroke-width:4; fill:none; }
+      .thin { stroke:#17324d; stroke-width:3; fill:none; }
+      .cut { stroke:#d93025; stroke-width:5; }
+      .label { font: 24px sans-serif; fill:#102a43; }
+      .small { font: 20px sans-serif; fill:#334e68; }
+      .title { font: bold 32px sans-serif; fill:#102a43; }
+      .note { font: bold 22px sans-serif; fill:#b42318; }
+      .box { fill:#f7fafc; stroke:#829ab1; stroke-width:3; rx:16; }
+    </style>
+  </defs>
+
+  <rect width="1200" height="720" fill="#ffffff"/>
+  <text x="600" y="50" text-anchor="middle" class="title">EG800K “宇”核心板 EN 飞线改造</text>
+
+  <rect x="60" y="110" width="270" height="130" class="box"/>
+  <text x="195" y="155" text-anchor="middle" class="label">ESP32-S3 GPIO44</text>
+  <text x="195" y="195" text-anchor="middle" class="small">Adapter H2-6 / EN 网络</text>
+
+  <line x1="330" y1="175" x2="435" y2="175" class="wire"/>
+  <rect x="435" y="150" width="150" height="50" fill="#fff" stroke="#17324d" stroke-width="3"/>
+  <text x="510" y="183" text-anchor="middle" class="label">R1 4.7kΩ</text>
+  <line x1="585" y1="175" x2="720" y2="175" class="wire"/>
+  <circle cx="650" cy="175" r="7" fill="#17324d"/>
+
+  <line x1="650" y1="175" x2="650" y2="300" class="wire"/>
+  <rect x="620" y="300" width="60" height="120" fill="#fff" stroke="#17324d" stroke-width="3"/>
+  <text x="700" y="360" class="label">R2 100kΩ</text>
+  <line x1="650" y1="420" x2="650" y2="495" class="wire"/>
+
+  <line x1="720" y1="175" x2="775" y2="175" class="wire"/>
+  <line x1="775" y1="130" x2="775" y2="220" class="thin"/>
+  <line x1="805" y1="110" x2="805" y2="240" class="thin"/>
+  <line x1="805" y1="125" x2="880" y2="80" class="wire"/>
+  <line x1="805" y1="225" x2="880" y2="270" class="wire"/>
+  <line x1="845" y1="249" x2="872" y2="253" class="thin"/>
+  <line x1="862" y1="229" x2="872" y2="253" class="thin"/>
+  <text x="785" y="285" text-anchor="middle" class="label">Q1 S8050</text>
+  <text x="740" y="145" class="small">B</text>
+  <text x="865" y="72" class="small">C</text>
+  <text x="865" y="300" class="small">E</text>
+
+  <line x1="880" y1="80" x2="990" y2="80" class="wire"/>
+  <rect x="990" y="105" width="170" height="130" class="box"/>
+  <line x1="1075" y1="105" x2="1075" y2="80" class="wire"/>
+  <text x="1075" y="150" text-anchor="middle" class="label">核心板 EN</text>
+  <text x="1075" y="190" text-anchor="middle" class="small">单排针 3 脚</text>
+  <text x="1075" y="220" text-anchor="middle" class="small">V1.4：拉低关机</text>
+
+  <line x1="880" y1="270" x2="880" y2="495" class="wire"/>
+  <line x1="650" y1="495" x2="880" y2="495" class="wire"/>
+  <line x1="765" y1="495" x2="765" y2="530" class="wire"/>
+  <line x1="720" y1="530" x2="810" y2="530" class="wire"/>
+  <line x1="735" y1="548" x2="795" y2="548" class="wire"/>
+  <line x1="750" y1="566" x2="780" y2="566" class="wire"/>
+  <text x="820" y="550" class="label">GND（两板共地）</text>
+
+  <line x1="350" y1="330" x2="520" y2="330" class="thin" stroke-dasharray="10 8"/>
+  <line x1="405" y1="302" x2="455" y2="358" class="cut"/>
+  <line x1="455" y1="302" x2="405" y2="358" class="cut"/>
+  <text x="435" y="390" text-anchor="middle" class="note">断开原 H2-6 → 核心板 EN 直连</text>
+  <text x="435" y="425" text-anchor="middle" class="small">做法：弯起核心板 3 脚，或割断对应走线</text>
+
+  <rect x="70" y="590" width="1060" height="90" fill="#fff4e5" stroke="#f59e0b" stroke-width="3" rx="12"/>
+  <text x="95" y="628" class="label">V1.4 控制逻辑：</text>
+  <text x="315" y="628" class="small">GPIO44 = 0 → Q1 截止 → EN 内部上拉 → 4G 开机</text>
+  <text x="315" y="662" class="small">GPIO44 = 1 → Q1 导通 → EN 拉低 → 4G 关机</text>
+</svg>
