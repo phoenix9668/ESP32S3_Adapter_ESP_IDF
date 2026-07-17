@@ -66,6 +66,7 @@ private:
     bool request_chunked_ = false;
     bool response_chunked_ = false;
     bool keep_alive_ = false;
+    bool stream_error_ = false;
 
     bool FetchHeaders();
     void ParseResponseHeaders(const std::string& headers);

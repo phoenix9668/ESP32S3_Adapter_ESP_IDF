@@ -21,6 +21,12 @@ typedef struct {
 } onenet_ota_task_t;
 
 bool onenet_ota_version_is_newer(const char *candidate, const char *current);
+bool onenet_ota_content_range_matches(const char *header, uint32_t offset,
+                                      uint32_t end, uint32_t total);
+uint32_t onenet_ota_resume_offset(uint32_t persisted_offset,
+                                  uint32_t total_size,
+                                  uint32_t erase_size);
+uint32_t onenet_ota_retry_delay_seconds(uint8_t attempt);
 bool onenet_ota_parse_inform_id(const char *json, size_t json_len, char *id,
                                 size_t id_size);
 bool onenet_ota_parse_task(const char *json, size_t json_len,

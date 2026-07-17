@@ -78,6 +78,37 @@ bool onenet_ota_version_is_newer(const char *candidate, const char *current) {
   return strcmp(left, right) > 0;
 }
 
+bool onenet_ota_content_range_matches(const char *header, uint32_t offset,
+                                      uint32_t end, uint32_t total) {
+  if (header == NULL || *header == '\0') {
+    return false;
+  }
+  unsigned long parsed_offset = 0U;
+  unsigned long parsed_end = 0U;
+  unsigned long parsed_total = 0U;
+  char trailing = '\0';
+  return sscanf(header, "bytes %lu-%lu/%lu%c", &parsed_offset, &parsed_end,
+                &parsed_total, &trailing) == 3 &&
+         parsed_offset == offset && parsed_end == end &&
+         parsed_total == total;
+}
+
+uint32_t onenet_ota_resume_offset(uint32_t persisted_offset,
+                                  uint32_t total_size,
+                                  uint32_t erase_size) {
+  if (erase_size == 0U || persisted_offset >= total_size) {
+    return 0U;
+  }
+  return persisted_offset - persisted_offset % erase_size;
+}
+
+uint32_t onenet_ota_retry_delay_seconds(uint8_t attempt) {
+  static const uint32_t delays[] = {5U, 15U, 30U, 60U, 300U};
+  const size_t count = sizeof(delays) / sizeof(delays[0]);
+  const size_t index = attempt < count ? attempt : count - 1U;
+  return delays[index];
+}
+
 bool onenet_ota_parse_inform_id(const char *json, size_t json_len, char *id,
                                 size_t id_size) {
   if (json == NULL || id == NULL || id_size == 0U) {

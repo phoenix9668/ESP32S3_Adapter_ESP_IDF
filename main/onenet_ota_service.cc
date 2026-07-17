@@ -1,5 +1,6 @@
 #include "onenet_ota_service.hpp"
 
+#include "cJSON.h"
 #include "cellular_service.h"
 #include "esp_app_desc.h"
 #include "esp_log.h"
@@ -13,7 +14,6 @@
 #include "nvs.h"
 #include "onenet_ota_protocol.h"
 #include "onenet_ota_service.h"
-#include "cJSON.h"
 
 #include <algorithm>
 #include <cctype>
@@ -30,9 +30,11 @@ constexpr const char *kOtaNamespace = "ota";
 constexpr const char *kExpectedProjectName = "ESP32S3_Adapter_ESP_IDF";
 constexpr uint32_t kOtaPollSeconds = 6U * 60U * 60U;
 constexpr uint32_t kHttpTimeoutMs = 30000U;
-constexpr size_t kHttpRangeSize = 64U * 1024U;
+constexpr size_t kHttpRangeSize = 256U * 1024U;
+constexpr size_t kCheckpointSize = 64U * 1024U;
 constexpr size_t kFlashWriteSize = 4096U;
 constexpr uint32_t kBootValidationDelayMs = 60U * 1000U;
+constexpr unsigned kMaxIntegrityRestarts = 1U;
 constexpr uint8_t kPersistDownloading = 1U;
 constexpr uint8_t kPersistRebootPending = 2U;
 constexpr uint8_t kPersistResultPending = 3U;
@@ -50,6 +52,12 @@ struct PersistedState {
   int32_t result = 0;
 };
 
+enum class ImageIdentityResult {
+  Valid,
+  VersionMismatch,
+  Invalid,
+};
+
 void set_ota_status(ota_state_t state, const onenet_ota_task_t *task,
                     uint32_t downloaded, int error) {
   taskENTER_CRITICAL(&s_ota_status_lock);
@@ -59,9 +67,8 @@ void set_ota_status(ota_state_t state, const onenet_ota_task_t *task,
   if (task != nullptr) {
     snprintf(s_ota_status.task_id, sizeof(s_ota_status.task_id), "%s",
              task->task_id);
-    snprintf(s_ota_status.target_version,
-             sizeof(s_ota_status.target_version), "%s",
-             task->target_version);
+    snprintf(s_ota_status.target_version, sizeof(s_ota_status.target_version),
+             "%s", task->target_version);
     s_ota_status.total_bytes = task->size;
   } else if (state == OTA_STATE_IDLE) {
     s_ota_status.task_id[0] = '\0';
@@ -79,7 +86,7 @@ esp_err_t read_string(nvs_handle_t handle, const char *key, char *output,
     return ret;
   }
   return required > 1U && required <= output_size ? ESP_OK
-                                                   : ESP_ERR_INVALID_SIZE;
+                                                  : ESP_ERR_INVALID_SIZE;
 }
 
 esp_err_t load_persisted_state(PersistedState *state) {
@@ -102,8 +109,7 @@ esp_err_t load_persisted_state(PersistedState *state) {
                       sizeof(state->task.target_version));
   }
   if (ret == ESP_OK) {
-    ret = read_string(handle, "md5", state->task.md5,
-                      sizeof(state->task.md5));
+    ret = read_string(handle, "md5", state->task.md5, sizeof(state->task.md5));
   }
   if (ret == ESP_OK) {
     ret = nvs_get_u32(handle, "size", &state->task.size);
@@ -112,8 +118,8 @@ esp_err_t load_persisted_state(PersistedState *state) {
     ret = nvs_get_u32(handle, "offset", &state->offset);
   }
   if (ret == ESP_OK) {
-    ret = read_string(handle, "part", state->partition,
-                      sizeof(state->partition));
+    ret =
+        read_string(handle, "part", state->partition, sizeof(state->partition));
   }
   if (ret == ESP_OK && state->state == kPersistResultPending) {
     ret = nvs_get_i32(handle, "result", &state->result);
@@ -203,8 +209,8 @@ bool http_json(AtModem *modem, const onenet_config_t &config,
   const bool opened = http->Open(method, kOtaBaseUrl + path);
   const int status = opened ? http->GetStatusCode() : -1;
   if (!opened || status < 200 || status >= 300) {
-    ESP_LOGW(TAG, "OneNET OTA HTTP %s failed: status=%d modem_error=%d",
-             method, status, http->GetLastError());
+    ESP_LOGW(TAG, "OneNET OTA HTTP %s failed: status=%d modem_error=%d", method,
+             status, http->GetLastError());
     http->Close();
     return false;
   }
@@ -227,8 +233,7 @@ bool response_code_ok(const std::string &body) {
 bool task_is_active(AtModem *modem, const onenet_config_t &config,
                     const char *task_id) {
   char path[256];
-  const int length = snprintf(path, sizeof(path),
-                              "/fuse-ota/%s/%s/%s/check",
+  const int length = snprintf(path, sizeof(path), "/fuse-ota/%s/%s/%s/check",
                               config.product_id, config.device_name, task_id);
   if (length <= 0 || (size_t)length >= sizeof(path)) {
     return false;
@@ -247,9 +252,9 @@ bool report_status(AtModem *modem, const onenet_config_t &config,
                    const char *task_id, int step) {
   char path[256];
   char payload[48];
-  const int path_length = snprintf(
-      path, sizeof(path), "/fuse-ota/%s/%s/%s/status", config.product_id,
-      config.device_name, task_id);
+  const int path_length =
+      snprintf(path, sizeof(path), "/fuse-ota/%s/%s/%s/status",
+               config.product_id, config.device_name, task_id);
   const int payload_length =
       snprintf(payload, sizeof(payload), "{\"step\":%d}", step);
   if (path_length <= 0 || (size_t)path_length >= sizeof(path) ||
@@ -268,11 +273,12 @@ bool report_status(AtModem *modem, const onenet_config_t &config,
   return ok;
 }
 
-bool partition_md5_matches(const esp_partition_t *partition, uint32_t size,
-                           const char *expected_hex) {
-  if (partition == nullptr || expected_hex == nullptr) {
+bool calculate_partition_md5(const esp_partition_t *partition, uint32_t size,
+                             char *actual_hex, size_t actual_hex_size) {
+  if (partition == nullptr || actual_hex == nullptr || actual_hex_size < 33U) {
     return false;
   }
+  actual_hex[0] = '\0';
   mbedtls_md5_context context;
   mbedtls_md5_init(&context);
   if (mbedtls_md5_starts(&context) != 0) {
@@ -297,42 +303,47 @@ bool partition_md5_matches(const esp_partition_t *partition, uint32_t size,
     return false;
   }
   mbedtls_md5_free(&context);
-  char actual[33];
   for (size_t i = 0U; i < sizeof(digest); ++i) {
-    snprintf(actual + i * 2U, 3U, "%02x", digest[i]);
-  }
-  return strcmp(actual, expected_hex) == 0;
-}
-
-bool validate_download_description(const esp_partition_t *partition,
-                                   const onenet_ota_task_t &task) {
-  esp_app_desc_t description = {};
-  if (esp_ota_get_partition_description(partition, &description) != ESP_OK) {
-    return false;
-  }
-  if (strcmp(description.project_name, kExpectedProjectName) != 0 ||
-      strcmp(description.version, task.target_version) != 0) {
-    ESP_LOGE(TAG,
-             "OTA image identity mismatch: project=%s version=%s expected=%s",
-             description.project_name, description.version,
-             task.target_version);
-    return false;
+    snprintf(actual_hex + i * 2U, 3U, "%02x", digest[i]);
   }
   return true;
 }
 
+ImageIdentityResult
+validate_download_description(const esp_partition_t *partition,
+                              const onenet_ota_task_t &task) {
+  esp_app_desc_t description = {};
+  const esp_err_t ret =
+      esp_ota_get_partition_description(partition, &description);
+  if (ret != ESP_OK) {
+    ESP_LOGE(TAG, "failed to read OTA image description: %s",
+             esp_err_to_name(ret));
+    return ImageIdentityResult::Invalid;
+  }
+  if (strcmp(description.project_name, kExpectedProjectName) != 0) {
+    ESP_LOGE(TAG, "OTA image project mismatch: project=%s expected=%s",
+             description.project_name, kExpectedProjectName);
+    return ImageIdentityResult::Invalid;
+  }
+  if (strcmp(description.version, task.target_version) != 0) {
+    ESP_LOGE(TAG, "OTA image version mismatch: image=%s expected=%s",
+             description.version, task.target_version);
+    return ImageIdentityResult::VersionMismatch;
+  }
+  return ImageIdentityResult::Valid;
+}
+
 bool open_download(AtModem *modem, const onenet_config_t &config,
-                   const onenet_ota_task_t &task, uint32_t offset,
-                   uint32_t end, std::unique_ptr<Http> *output) {
+                   const onenet_ota_task_t &task, uint32_t offset, uint32_t end,
+                   std::unique_ptr<Http> *output) {
   std::string authorization;
   if (output == nullptr || !make_ota_authorization(config, &authorization)) {
     return false;
   }
   char path[256];
-  const int length = snprintf(path, sizeof(path),
-                              "/fuse-ota/%s/%s/%s/download",
-                              config.product_id, config.device_name,
-                              task.task_id);
+  const int length =
+      snprintf(path, sizeof(path), "/fuse-ota/%s/%s/%s/download",
+               config.product_id, config.device_name, task.task_id);
   if (length <= 0 || (size_t)length >= sizeof(path)) {
     return false;
   }
@@ -350,9 +361,27 @@ bool open_download(AtModem *modem, const onenet_config_t &config,
     return false;
   }
   const int status = http->GetStatusCode();
-  if (status != 206 && !(status == 200 && offset == 0U)) {
+  const uint32_t expected = end - offset + 1U;
+  if (status != 206 &&
+      !(status == 200 && offset == 0U && expected == task.size)) {
     ESP_LOGW(TAG, "OTA Range request rejected: status=%d offset=%lu", status,
              (unsigned long)offset);
+    http->Close();
+    return false;
+  }
+  const size_t body_length = http->GetBodyLength();
+  if (body_length != 0U && body_length != expected) {
+    ESP_LOGW(
+        TAG, "OTA Range length mismatch: offset=%lu expected=%lu actual=%u",
+        (unsigned long)offset, (unsigned long)expected, (unsigned)body_length);
+    http->Close();
+    return false;
+  }
+  const std::string content_range = http->GetResponseHeader("Content-Range");
+  if (status == 206 && !content_range.empty() &&
+      !onenet_ota_content_range_matches(content_range.c_str(), offset, end,
+                                        task.size)) {
+    ESP_LOGW(TAG, "OTA Content-Range mismatch: %s", content_range.c_str());
     http->Close();
     return false;
   }
@@ -371,121 +400,184 @@ bool download_task(AtModem *modem, const onenet_config_t &config,
     return false;
   }
 
-  PersistedState persisted;
-  bool resume = load_persisted_state(&persisted) == ESP_OK &&
-                persisted.state == kPersistDownloading &&
-                strcmp(persisted.task.task_id, task.task_id) == 0 &&
-                strcmp(persisted.task.target_version, task.target_version) == 0 &&
-                strcmp(persisted.task.md5, task.md5) == 0 &&
-                persisted.task.size == task.size &&
-                strcmp(persisted.partition, partition->label) == 0 &&
-                persisted.offset <= task.size;
-  uint32_t offset = resume ? persisted.offset : 0U;
-  esp_ota_handle_t handle = 0U;
-  esp_err_t ret = resume ? esp_ota_resume(partition, 0U, offset, &handle)
-                         : esp_ota_begin(partition, task.size, &handle);
-  if (ret != ESP_OK) {
-    ESP_LOGE(TAG, "OTA partition prepare failed: %s", esp_err_to_name(ret));
-    report_status(modem, config, task.task_id, 102);
-    return false;
-  }
-
-  persisted = PersistedState{};
-  persisted.state = kPersistDownloading;
-  persisted.task = task;
-  persisted.offset = offset;
-  snprintf(persisted.partition, sizeof(persisted.partition), "%s",
-           partition->label);
-  if (save_persisted_state(persisted) != ESP_OK) {
-    esp_ota_abort(handle);
-    return false;
-  }
-
-  set_ota_status(OTA_STATE_DOWNLOADING, &task, offset, 0);
-  report_status(modem, config, task.task_id, 10);
-  unsigned last_progress = offset == 0U ? 0U : (unsigned)(offset * 100U / task.size);
-  uint8_t buffer[kFlashWriteSize];
-
-  while (offset < task.size) {
-    const uint32_t range_end =
-        std::min(task.size - 1U,
-                 offset + (uint32_t)kHttpRangeSize - 1U);
-    const uint32_t expected = range_end - offset + 1U;
-    std::unique_ptr<Http> http;
-    if (!open_download(modem, config, task, offset, range_end, &http)) {
-      esp_ota_abort(handle);
-      set_ota_status(OTA_STATE_FAILED, &task, offset, ESP_ERR_TIMEOUT);
-      ESP_LOGW(TAG,
-               "OTA download paused at offset=%lu; retaining checkpoint for "
-               "retry",
+  for (unsigned integrity_restart = 0U;
+       integrity_restart <= kMaxIntegrityRestarts; ++integrity_restart) {
+    PersistedState persisted;
+    bool resume =
+        integrity_restart == 0U && load_persisted_state(&persisted) == ESP_OK &&
+        persisted.state == kPersistDownloading &&
+        strcmp(persisted.task.task_id, task.task_id) == 0 &&
+        strcmp(persisted.task.target_version, task.target_version) == 0 &&
+        strcmp(persisted.task.md5, task.md5) == 0 &&
+        persisted.task.size == task.size &&
+        strcmp(persisted.partition, partition->label) == 0 &&
+        persisted.offset < task.size;
+    uint32_t offset =
+        resume ? onenet_ota_resume_offset(persisted.offset, task.size,
+                                          (uint32_t)kFlashWriteSize)
+               : 0U;
+    if (resume) {
+      ESP_LOGI(TAG, "resuming OTA at erase-aligned checkpoint=%lu",
                (unsigned long)offset);
+    }
+
+    esp_ota_handle_t handle = 0U;
+    esp_err_t ret = resume
+                        ? esp_ota_resume(partition, OTA_WITH_SEQUENTIAL_WRITES,
+                                         offset, &handle)
+                        : esp_ota_begin(partition, task.size, &handle);
+    if (ret != ESP_OK) {
+      ESP_LOGE(TAG, "OTA partition prepare failed: %s", esp_err_to_name(ret));
+      clear_persisted_state();
+      report_status(modem, config, task.task_id, 102);
       return false;
     }
-    uint32_t received = 0U;
-    while (received < expected) {
-      const size_t wanted =
-          std::min(sizeof(buffer), (size_t)(expected - received));
-      const int count = http->Read(reinterpret_cast<char *>(buffer), wanted);
-      if (count <= 0 || (size_t)count > wanted ||
-          esp_ota_write(handle, buffer, (size_t)count) != ESP_OK) {
-        http->Close();
-        esp_ota_abort(handle);
-        set_ota_status(OTA_STATE_FAILED, &task, offset + received,
-                       count <= 0 ? ESP_ERR_TIMEOUT : ESP_FAIL);
-        ESP_LOGW(TAG,
-                 "OTA download interrupted at offset=%lu; retaining "
-                 "checkpoint for retry",
-                 (unsigned long)(offset + received));
-        return false;
-      }
-      received += (uint32_t)count;
-      set_ota_status(OTA_STATE_DOWNLOADING, &task, offset + received, 0);
-    }
-    http->Close();
-    offset += received;
+
+    persisted = PersistedState{};
+    persisted.state = kPersistDownloading;
+    persisted.task = task;
     persisted.offset = offset;
+    snprintf(persisted.partition, sizeof(persisted.partition), "%s",
+             partition->label);
     if (save_persisted_state(persisted) != ESP_OK) {
       esp_ota_abort(handle);
       return false;
     }
-    const unsigned progress = (unsigned)((uint64_t)offset * 100U / task.size);
-    if (progress / 10U > last_progress / 10U) {
-      report_status(modem, config, task.task_id, (int)progress);
-      last_progress = progress;
+
+    set_ota_status(OTA_STATE_DOWNLOADING, &task, offset, 0);
+    if (offset == 0U) {
+      report_status(modem, config, task.task_id, 0);
     }
-  }
+    uint8_t buffer[kFlashWriteSize];
+    uint32_t next_checkpoint =
+        ((offset / (uint32_t)kCheckpointSize) + 1U) * (uint32_t)kCheckpointSize;
 
-  set_ota_status(OTA_STATE_VERIFYING, &task, task.size, 0);
-  if (!partition_md5_matches(partition, task.size, task.md5) ||
-      !validate_download_description(partition, task)) {
-    esp_ota_abort(handle);
-    set_ota_status(OTA_STATE_FAILED, &task, task.size,
-                   ESP_ERR_OTA_VALIDATE_FAILED);
-    report_status(modem, config, task.task_id, 205);
-    return false;
-  }
-  ret = esp_ota_end(handle);
-  if (ret != ESP_OK) {
-    set_ota_status(OTA_STATE_FAILED, &task, task.size, ret);
-    report_status(modem, config, task.task_id, 205);
-    return false;
-  }
-  report_status(modem, config, task.task_id, 101);
+    while (offset < task.size) {
+      const uint32_t range_end =
+          std::min(task.size - 1U, offset + (uint32_t)kHttpRangeSize - 1U);
+      const uint32_t expected = range_end - offset + 1U;
+      std::unique_ptr<Http> http;
+      if (!open_download(modem, config, task, offset, range_end, &http)) {
+        esp_ota_abort(handle);
+        set_ota_status(OTA_STATE_FAILED, &task, persisted.offset,
+                       ESP_ERR_TIMEOUT);
+        ESP_LOGW(TAG, "OTA request failed at offset=%lu; retry checkpoint=%lu",
+                 (unsigned long)offset, (unsigned long)persisted.offset);
+        return false;
+      }
+      uint32_t received = 0U;
+      while (received < expected) {
+        const size_t wanted =
+            std::min(sizeof(buffer), (size_t)(expected - received));
+        const int count = http->Read(reinterpret_cast<char *>(buffer), wanted);
+        const esp_err_t write_ret =
+            count > 0 && (size_t)count <= wanted
+                ? esp_ota_write(handle, buffer, (size_t)count)
+                : ESP_ERR_TIMEOUT;
+        if (count <= 0 || (size_t)count > wanted || write_ret != ESP_OK) {
+          http->Close();
+          esp_ota_abort(handle);
+          set_ota_status(OTA_STATE_FAILED, &task, persisted.offset, write_ret);
+          ESP_LOGW(TAG,
+                   "OTA stream interrupted at offset=%lu; retry "
+                   "checkpoint=%lu error=%s",
+                   (unsigned long)(offset + received),
+                   (unsigned long)persisted.offset, esp_err_to_name(write_ret));
+          return false;
+        }
+        received += (uint32_t)count;
+        const uint32_t downloaded = offset + received;
+        set_ota_status(OTA_STATE_DOWNLOADING, &task, downloaded, 0);
+        while (next_checkpoint <= downloaded && next_checkpoint < task.size) {
+          persisted.offset = next_checkpoint;
+          if (save_persisted_state(persisted) != ESP_OK) {
+            http->Close();
+            esp_ota_abort(handle);
+            return false;
+          }
+          ESP_LOGI(TAG, "OTA checkpoint=%lu/%lu",
+                   (unsigned long)persisted.offset, (unsigned long)task.size);
+          next_checkpoint += (uint32_t)kCheckpointSize;
+        }
+      }
+      http->Close();
+      offset += received;
+    }
 
-  persisted.state = kPersistRebootPending;
-  persisted.offset = task.size;
-  if (save_persisted_state(persisted) != ESP_OK ||
-      (ret = esp_ota_set_boot_partition(partition)) != ESP_OK) {
-    set_ota_status(OTA_STATE_FAILED, &task, task.size, ret);
-    report_status(modem, config, task.task_id, 206);
-    return false;
+    persisted.offset = task.size;
+    if (save_persisted_state(persisted) != ESP_OK) {
+      esp_ota_abort(handle);
+      return false;
+    }
+    set_ota_status(OTA_STATE_VERIFYING, &task, task.size, 0);
+
+    char actual_md5[33] = {};
+    const bool md5_read = calculate_partition_md5(
+        partition, task.size, actual_md5, sizeof(actual_md5));
+    if (!md5_read || strcmp(actual_md5, task.md5) != 0) {
+      ESP_LOGE(TAG, "OTA MD5 mismatch: expected=%s actual=%s", task.md5,
+               md5_read ? actual_md5 : "unavailable");
+      esp_ota_abort(handle);
+      clear_persisted_state();
+      if (integrity_restart < kMaxIntegrityRestarts) {
+        ESP_LOGW(TAG,
+                 "discarding corrupt OTA image and restarting full download "
+                 "once");
+        continue;
+      }
+      set_ota_status(OTA_STATE_FAILED, &task, task.size,
+                     ESP_ERR_OTA_VALIDATE_FAILED);
+      report_status(modem, config, task.task_id, 205);
+      return false;
+    }
+    ESP_LOGI(TAG, "OTA MD5 verified: %s", actual_md5);
+    report_status(modem, config, task.task_id, 100);
+
+    const ImageIdentityResult identity =
+        validate_download_description(partition, task);
+    if (identity != ImageIdentityResult::Valid) {
+      esp_ota_abort(handle);
+      clear_persisted_state();
+      set_ota_status(OTA_STATE_FAILED, &task, task.size,
+                     ESP_ERR_OTA_VALIDATE_FAILED);
+      report_status(modem, config, task.task_id,
+                    identity == ImageIdentityResult::VersionMismatch ? 204
+                                                                     : 206);
+      return false;
+    }
+
+    ret = esp_ota_end(handle);
+    if (ret != ESP_OK) {
+      ESP_LOGE(TAG, "OTA image/signature validation failed: %s",
+               esp_err_to_name(ret));
+      clear_persisted_state();
+      set_ota_status(OTA_STATE_FAILED, &task, task.size, ret);
+      report_status(modem, config, task.task_id, 206);
+      return false;
+    }
+    report_status(modem, config, task.task_id, 101);
+
+    persisted.state = kPersistRebootPending;
+    persisted.offset = task.size;
+    ret = save_persisted_state(persisted);
+    if (ret == ESP_OK) {
+      ret = esp_ota_set_boot_partition(partition);
+    }
+    if (ret != ESP_OK) {
+      ESP_LOGE(TAG, "OTA boot partition selection failed: %s",
+               esp_err_to_name(ret));
+      set_ota_status(OTA_STATE_FAILED, &task, task.size, ret);
+      report_status(modem, config, task.task_id, 206);
+      return false;
+    }
+    set_ota_status(OTA_STATE_PENDING_REBOOT, &task, task.size, 0);
+    ESP_LOGI(TAG, "OTA image verified; rebooting into version %s",
+             task.target_version);
+    vTaskDelay(pdMS_TO_TICKS(1000U));
+    esp_restart();
+    return true;
   }
-  set_ota_status(OTA_STATE_PENDING_REBOOT, &task, task.size, 0);
-  ESP_LOGI(TAG, "OTA image verified; rebooting into version %s",
-           task.target_version);
-  vTaskDelay(pdMS_TO_TICKS(1000U));
-  esp_restart();
-  return true;
+  return false;
 }
 
 void boot_validation_task(void *) {
@@ -497,8 +589,7 @@ void boot_validation_task(void *) {
   if (running != nullptr &&
       esp_ota_get_state_partition(running, &image_state) == ESP_OK &&
       image_state == ESP_OTA_IMG_PENDING_VERIFY) {
-    set_ota_status(OTA_STATE_TRIAL,
-                   have_persisted ? &persisted.task : nullptr,
+    set_ota_status(OTA_STATE_TRIAL, have_persisted ? &persisted.task : nullptr,
                    have_persisted ? persisted.offset : 0U, 0);
     vTaskDelay(pdMS_TO_TICKS(kBootValidationDelayMs));
     if (!cellular_service_config_ready()) {
@@ -568,6 +659,7 @@ bool OneNetOtaService::HandleMqttMessage(const std::string &topic,
 void OneNetOtaService::OnOnline() {
   version_reported_ = false;
   next_check_epoch_ = 0U;
+  retry_attempt_ = 0U;
   std::lock_guard<std::mutex> lock(mutex_);
   check_requested_ = true;
 }
@@ -602,21 +694,21 @@ bool OneNetOtaService::ReportVersion() {
   char path[256];
   char payload[128];
   const char *version = esp_app_get_description()->version;
-  const int path_length = snprintf(path, sizeof(path),
-                                   "/fuse-ota/%s/%s/version",
-                                   config_.product_id, config_.device_name);
+  const int path_length =
+      snprintf(path, sizeof(path), "/fuse-ota/%s/%s/version",
+               config_.product_id, config_.device_name);
   const int payload_length =
       snprintf(payload, sizeof(payload),
-               "{\"s_version\":\"%s\",\"f_version\":\"ML307C\"}",
-               version);
+               "{\"s_version\":\"%s\",\"f_version\":\"ML307C\"}", version);
   if (path_length <= 0 || (size_t)path_length >= sizeof(path) ||
       payload_length <= 0 || (size_t)payload_length >= sizeof(payload)) {
     return false;
   }
   const std::string request(payload, (size_t)payload_length);
   std::string response;
-  const bool ok = http_json(modem_, config_, "POST", path, &request, &response) &&
-                  response_code_ok(response);
+  const bool ok =
+      http_json(modem_, config_, "POST", path, &request, &response) &&
+      response_code_ok(response);
   if (ok) {
     ESP_LOGI(TAG, "OneNET SOTA version reported: %s", version);
   }
@@ -644,10 +736,10 @@ bool OneNetOtaService::CheckAndApply() {
     return false;
   }
   char path[320];
-  const int path_length = snprintf(
-      path, sizeof(path), "/fuse-ota/%s/%s/check?type=2&version=%s",
-      config_.product_id, config_.device_name,
-      esp_app_get_description()->version);
+  const int path_length =
+      snprintf(path, sizeof(path), "/fuse-ota/%s/%s/check?type=2&version=%s",
+               config_.product_id, config_.device_name,
+               esp_app_get_description()->version);
   if (path_length <= 0 || (size_t)path_length >= sizeof(path)) {
     return false;
   }
@@ -692,8 +784,19 @@ void OneNetOtaService::Service() {
   if (requested || next_check_epoch_ == 0U ||
       (now > 0 && (uint64_t)now >= next_check_epoch_)) {
     const bool ok = CheckAndApply();
-    next_check_epoch_ =
-        now > 0 ? (uint64_t)now + (ok ? kOtaPollSeconds : 300U) : 0U;
+    if (ok) {
+      retry_attempt_ = 0U;
+      next_check_epoch_ = now > 0 ? (uint64_t)now + kOtaPollSeconds : 0U;
+    } else {
+      const uint32_t retry_delay =
+          onenet_ota_retry_delay_seconds(retry_attempt_);
+      if (retry_attempt_ < UINT8_MAX) {
+        ++retry_attempt_;
+      }
+      next_check_epoch_ = now > 0 ? (uint64_t)now + retry_delay : 0U;
+      ESP_LOGW(TAG, "OTA retry scheduled in %lu seconds",
+               (unsigned long)retry_delay);
+    }
   }
 }
 

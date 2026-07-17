@@ -31,6 +31,7 @@ private:
   bool check_requested_ = false;
   bool version_reported_ = false;
   uint64_t next_check_epoch_ = 0U;
+  uint8_t retry_attempt_ = 0U;
 
   bool PublishInformReply();
   bool ReportVersion();

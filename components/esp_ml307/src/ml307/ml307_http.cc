@@ -11,9 +11,17 @@ Ml307Http::Ml307Http(std::shared_ptr<AtUart> at_uart) : at_uart_(at_uart) {
 
     urc_callback_it_ = at_uart_->RegisterUrcCallback([this](const std::string& command, const std::vector<AtArgumentValue>& arguments) {
         if (command == "MHTTPURC") {
+            if (arguments.size() < 2) {
+                ESP_LOGE(TAG, "Malformed MHTTPURC");
+                return;
+            }
             if (arguments[1].int_value == http_id_) {
                 auto& type = arguments[0].string_value;
                 if (type == "header") {
+                    if (arguments.size() < 3) {
+                        ESP_LOGE(TAG, "Missing HTTP status header");
+                        return;
+                    }
                     eof_ = false;
                     body_offset_ = 0;
                     body_.clear();
@@ -27,15 +35,36 @@ Ml307Http::Ml307Http(std::shared_ptr<AtUart> at_uart) : at_uart_(at_uart) {
                     xEventGroupSetBits(event_group_handle_, ML307_HTTP_EVENT_HEADERS_RECEIVED);
                 } else if (type == "content") {
                     // +MHTTPURC: "content",<httpid>,<content_len>,<sum_len>,<cur_len>,<data>
-                    std::string decoded_data;
-                    if (arguments.size() >= 6) {
-                        at_uart_->DecodeHexAppend(decoded_data, arguments[5].string_value.c_str(), arguments[5].string_value.length());
-                    } else {
-                        // FIXME: <data> 被分包发送
-                        ESP_LOGE(TAG, "Missing content");
+                    if (arguments.size() < 6 || arguments[2].int_value < 0 ||
+                        arguments[3].int_value < 0 || arguments[4].int_value < 0) {
+                        ESP_LOGE(TAG, "Malformed HTTP content URC");
+                        std::lock_guard<std::mutex> lock(mutex_);
+                        error_code_ = 9;
+                        stream_error_ = true;
+                        eof_ = true;
+                        xEventGroupSetBits(event_group_handle_, ML307_HTTP_EVENT_ERROR);
+                        cv_.notify_one();
+                        return;
                     }
+                    std::string decoded_data;
+                    at_uart_->DecodeHexAppend(decoded_data, arguments[5].string_value.c_str(), arguments[5].string_value.length());
 
                     std::lock_guard<std::mutex> lock(mutex_);
+                    const size_t reported_current = (size_t)arguments[4].int_value;
+                    const size_t reported_sum = (size_t)arguments[3].int_value;
+                    if (decoded_data.size() != reported_current ||
+                        body_offset_ + decoded_data.size() != reported_sum) {
+                        ESP_LOGE(TAG,
+                                 "HTTP content gap: decoded=%u current=%u local_sum=%u reported_sum=%u",
+                                 (unsigned)decoded_data.size(), (unsigned)reported_current,
+                                 (unsigned)(body_offset_ + decoded_data.size()), (unsigned)reported_sum);
+                        error_code_ = 9;
+                        stream_error_ = true;
+                        eof_ = true;
+                        xEventGroupSetBits(event_group_handle_, ML307_HTTP_EVENT_ERROR);
+                        cv_.notify_one();
+                        return;
+                    }
                     body_.append(decoded_data);
 
                     // chunked传输时，EOF由cur_len == 0判断，非 chunked传输时，EOF由content_len判断
@@ -47,16 +76,15 @@ Ml307Http::Ml307Http(std::shared_ptr<AtUart> at_uart) : at_uart_(at_uart) {
                         }
                     }
 
-                    body_offset_ += arguments[4].int_value;
-                    if (arguments[3].int_value > body_offset_) {
-                        ESP_LOGE(TAG, "body_offset_: %u, arguments[3].int_value: %d", body_offset_, arguments[3].int_value);
-                        Close();
-                        return;
-                    }
+                    body_offset_ = reported_sum;
                     cv_.notify_one();  // 使用条件变量通知
                 } else if (type == "err") {
-                    error_code_ = arguments[2].int_value;
+                    std::lock_guard<std::mutex> lock(mutex_);
+                    error_code_ = arguments.size() >= 3 ? arguments[2].int_value : 255;
+                    stream_error_ = true;
+                    eof_ = true;
                     xEventGroupSetBits(event_group_handle_, ML307_HTTP_EVENT_ERROR);
+                    cv_.notify_one();
                 } else if (type == "ind") {
                     xEventGroupSetBits(event_group_handle_, ML307_HTTP_EVENT_IND);
                 } else {
@@ -68,8 +96,14 @@ Ml307Http::Ml307Http(std::shared_ptr<AtUart> at_uart) : at_uart_(at_uart) {
             instance_active_ = true;
             xEventGroupSetBits(event_group_handle_, ML307_HTTP_EVENT_INITIALIZED);
         } else if (command == "FIFO_OVERFLOW") {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                error_code_ = 9;
+                stream_error_ = true;
+                eof_ = true;
+                cv_.notify_one();
+            }
             xEventGroupSetBits(event_group_handle_, ML307_HTTP_EVENT_ERROR);
-            Close();
         }
     });
 }
@@ -77,6 +111,9 @@ Ml307Http::Ml307Http(std::shared_ptr<AtUart> at_uart) : at_uart_(at_uart) {
 int Ml307Http::Read(char* buffer, size_t buffer_size) {
     std::unique_lock<std::mutex> lock(mutex_);
 
+    if (stream_error_ && body_.empty()) {
+        return -1;
+    }
     if (eof_ && body_.empty()) {
         return 0;
     }
@@ -84,12 +121,15 @@ int Ml307Http::Read(char* buffer, size_t buffer_size) {
     // 使用条件变量等待数据
     auto timeout = std::chrono::milliseconds(timeout_ms_);
     bool received = cv_.wait_for(lock, timeout, [this] {
-        return !body_.empty() || eof_;
+        return !body_.empty() || eof_ || stream_error_;
     });
 
     if (!received) {
         ESP_LOGE(TAG, "Timeout waiting for HTTP content to be received, body_offset: %u, eof: %d",
                  body_offset_, eof_);
+        return -1;
+    }
+    if (stream_error_ && body_.empty()) {
         return -1;
     }
     if (!instance_active_) {

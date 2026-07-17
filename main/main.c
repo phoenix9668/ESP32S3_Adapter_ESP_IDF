@@ -11,6 +11,9 @@
 static const char *TAG = "APP";
 
 void app_main(void) {
+  /* Keep component diagnostics available while suppressing high-rate NVS
+   * internals during OTA checkpoint polling and writes. */
+  esp_log_level_set("nvs", ESP_LOG_INFO);
   app_protocol_init();
 
   ESP_ERROR_CHECK(board_init());

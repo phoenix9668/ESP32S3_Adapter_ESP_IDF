@@ -311,23 +311,43 @@ OneNET 要求上传文件名为 1–20 个英文字母、数字、点、连字�
 
 ### 3. 断点续传、验签和回滚
 
-- 每个 HTTP Range 最大 64 KiB，实际每次 4 KiB 写入非活动 OTA 分区。
-- 每完成 64 KiB，在 NVS `ota` namespace 保存任务 ID、版本、MD5、分区和
-  偏移；断网或重启后用 `esp_ota_resume()` 继续。
+- 每个 HTTP Range 最大 256 KiB，实际每次最多 4 KiB 写入非活动 OTA 分区；
+  下载开始和完成各上报一次状态，避免每 64 KiB 都重新 TLS 建连。
+- 同一个 Range 连接内每完成 64 KiB，就在 NVS `ota` namespace 保存任务 ID、
+  版本、MD5、分区和偏移。断网或重启后从 4 KiB 擦除边界恢复，并在重写前
+  擦除检查点之后的 Flash 扇区，避免断流数据污染 MD5。
 - HTTP 超时或断网只暂停下载并保留检查点，不会上报会结束云端任务的终态；
-  恢复网络后继续同一任务。
+  恢复网络后按 5、15、30、60、300 秒退避继续同一任务。
 - 下载完成依次校验总长度、OneNET MD5、ESP 镜像 project/version 和 RSA-3072
-  应用签名。任一失败都不会切换启动分区。
+  应用签名。MD5 不一致会清除坏检查点并自动完整重下 1 次；第二次仍不一致才
+  上报 `205`。任一失败都不会切换启动分区。
 - 新镜像启动后进入 rollback trial。NVS、RFID Store、主要任务和 `onenet`
   配置成功启动并稳定 60 秒后才标记有效；蜂窝网络是否在线不作为回滚条件。
 - 新版本随后联网时补报 `step=201`。若新固件崩溃或看门狗复位，bootloader
   自动回滚，旧版本恢复联网后补报失败。
 - OTA 不修改 NVS 凭据、RFID Store、bootloader 或分区表。
 
-常用终态：`102` OTA 分区空间不足、`205` 文件/MD5/签名校验失败、`206` 安装或
-启动失败。临时下载/网络失败会保留为可恢复状态。出现失败时先检查 OneNET
-任务版本、完整包类型、上传文件 MD5、应用
-大小、SIM 网络和串口日志，不要重置 Device Key。
+常用终态：`102` OTA 分区空间不足、`204` 镜像版本不一致、`205` MD5 校验失败、
+`206` project、RSA/镜像签名或安装失败。临时下载/网络失败会保留为可恢复状态。
+日志会输出期望和实际 MD5，但不会输出 Device Key、token 或 Authorization。
+出现失败时先检查 OneNET 任务版本、完整包类型、上传文件 MD5、应用大小、SIM
+网络和串口日志，不要重置 Device Key。
+
+旧固件已经上报 `205` 且 NVS 中保存了 100% 坏检查点时，不要继续等待原任务。
+先通过 USB 烧录包含本节修复的应用（保留 `onenet` 和 `rfid_store` 分区），再在
+OneNET 创建一个新任务 ID；新固件也会拒绝把 `offset == size` 当作有效断点。
+
+本工程可用下面的应用分区单独烧录方式恢复，不会改写 OneNET NVS、RFID Store、
+bootloader 或分区表。把端口替换成实际枚举出的 USB Serial/JTAG 设备：
+
+```sh
+export IDF_TOOLS_PATH=/Users/gally/.espressif/tools
+. /Users/gally/.espressif/v5.5.4/esp-idf/export.sh
+idf.py -p /dev/tty.usbmodemXXXX app-flash monitor
+```
+
+不要执行 `erase-flash`。恢复固件上线并重新上报当前版本后，应删除/停止旧的失败
+任务，使用版本更高的新 `.bin` 新建任务验证 OTA 修复。
 
 如果两个应用槽都无法启动，使用 USB Serial/JTAG 进入下载模式，按“公共
 factory 固件 + 该 MAC 原身份专属 NVS”返修烧录；不要擦除或改写
