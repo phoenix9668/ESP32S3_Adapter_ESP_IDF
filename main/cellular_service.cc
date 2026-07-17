@@ -6,6 +6,7 @@
 #include "driver/gpio.h"
 #include "driver/uart.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 #include "freertos/task.h"
@@ -35,6 +36,7 @@ constexpr int kNetworkReadyTimeoutMs = 60000;
 constexpr int kOneNetKeepAliveSeconds = 300;
 constexpr uint32_t kGnssPollIntervalMs = 120U * 1000U;
 constexpr uint32_t kReplyTimeoutMs = 10U * 1000U;
+constexpr uint32_t kUploadRetryDelayMs = 5U * 1000U;
 constexpr uint32_t kIdleDelayMs = 250U;
 constexpr EventBits_t kReplyEvent = BIT0;
 constexpr EventBits_t kDisconnectedEvent = BIT1;
@@ -51,9 +53,11 @@ portMUX_TYPE s_reply_lock = portMUX_INITIALIZER_UNLOCKED;
 portMUX_TYPE s_gnss_lock = portMUX_INITIALIZER_UNLOCKED;
 cellular_status_t s_status = {};
 gnss_fix_t s_latest_gnss = {};
+bool s_gnss_state_seen;
+uint8_t s_gnss_state;
 char s_inflight_id[16] = {};
 int s_reply_code = -1;
-uint32_t s_request_id = 1U;
+uint32_t s_request_id;
 char s_reply_topic[256] = {};
 
 std::unique_ptr<AtModem> s_modem;
@@ -162,6 +166,24 @@ void update_csq() {
 
 void handle_gnss_urc(const std::string &command,
                      const std::vector<AtArgumentValue> &arguments) {
+  int state = -1;
+  if (command == "MGNSS" && !arguments.empty() &&
+      arguments[0].type == AtArgumentValue::Type::Int) {
+    state = arguments[0].int_value;
+  } else if (command == "MGNSSURC" && arguments.size() >= 2U &&
+             arguments[0].string_value == "state" &&
+             arguments[1].type == AtArgumentValue::Type::Int) {
+    state = arguments[1].int_value;
+  }
+  if (state >= 0 && state <= 2) {
+    taskENTER_CRITICAL(&s_gnss_lock);
+    s_gnss_state = static_cast<uint8_t>(state);
+    s_gnss_state_seen = true;
+    taskEXIT_CRITICAL(&s_gnss_lock);
+    ESP_LOGI(TAG, "GNSS engine state=%d", state);
+    return;
+  }
+
   if (command != "MGNSSLOC" || arguments.size() < 12U) {
     return;
   }
@@ -215,6 +237,11 @@ void handle_mqtt_message(const std::string &topic,
   }
   taskEXIT_CRITICAL(&s_reply_lock);
   if (matches) {
+    if (code != 200) {
+      const size_t log_length = std::min(payload.size(), size_t{256U});
+      ESP_LOGW(TAG, "OneNET reply payload=%.*s", (int)log_length,
+               payload.data());
+    }
     xEventGroupSetBits(s_events, kReplyEvent);
   } else {
     ESP_LOGD(TAG, "ignored OneNET reply for id=%s", reply_id);
@@ -306,13 +333,13 @@ bool upload_gnss(const gnss_fix_t &fix, const char *post_topic) {
         payload, sizeof(payload),
         "{\"id\":\"%s\",\"version\":\"1.0\",\"params\":{"
         "\"fix_status\":{\"value\":1},"
-        "\"latitude\":{\"value\":%.7f},"
-        "\"longitude\":{\"value\":%.7f},"
-        "\"altitude\":{\"value\":%.2f},"
-        "\"speed_kph\":{\"value\":%.2f},"
-        "\"course_deg\":{\"value\":%.2f},"
+        "\"latitude\":{\"value\":%.6f},"
+        "\"longitude\":{\"value\":%.6f},"
+        "\"altitude\":{\"value\":%.1f},"
+        "\"speed_kph\":{\"value\":%.1f},"
+        "\"course_deg\":{\"value\":%.1f},"
         "\"satellites\":{\"value\":%u},"
-        "\"hdop\":{\"value\":%.2f},"
+        "\"hdop\":{\"value\":%.1f},"
         "\"utc_time\":{\"value\":\"%s\"}}}",
         request_id, fix.latitude, fix.longitude, fix.altitude_m, fix.speed_kph,
         fix.course_deg, fix.satellites, fix.hdop, fix.utc_time);
@@ -327,11 +354,38 @@ bool configure_gnss() {
     ESP_LOGW(TAG, "failed to disable automatic GNSS reports");
     return false;
   }
-  if (!uart->SendCommand("AT+MGNSS=1", 5000)) {
-    ESP_LOGW(TAG, "failed to enable continuous GNSS");
-    return false;
+
+  const auto query_state = [&uart](uint8_t *state) {
+    taskENTER_CRITICAL(&s_gnss_lock);
+    s_gnss_state_seen = false;
+    taskEXIT_CRITICAL(&s_gnss_lock);
+    if (!uart->SendCommand("AT+MGNSS?", 3000)) {
+      return false;
+    }
+    taskENTER_CRITICAL(&s_gnss_lock);
+    const bool seen = s_gnss_state_seen;
+    if (seen) {
+      *state = s_gnss_state;
+    }
+    taskEXIT_CRITICAL(&s_gnss_lock);
+    return seen;
+  };
+
+  uint8_t state = 0U;
+  if (query_state(&state) && state == 1U) {
+    ESP_LOGI(TAG, "continuous GNSS already enabled");
+    return true;
   }
-  return true;
+  if (uart->SendCommand("AT+MGNSS=1", 5000)) {
+    ESP_LOGI(TAG, "continuous GNSS enabled");
+    return true;
+  }
+  if (query_state(&state) && state == 1U) {
+    ESP_LOGW(TAG, "GNSS enable returned an error but state is already continuous");
+    return true;
+  }
+  ESP_LOGW(TAG, "failed to enable continuous GNSS, final state=%u", state);
+  return false;
 }
 
 bool connect_cloud(const onenet_config_t &config, const char *token,
@@ -378,6 +432,8 @@ void online_loop(const char *post_topic) {
   TickType_t next_gnss_poll = xTaskGetTickCount();
   TickType_t next_mqtt_check =
       xTaskGetTickCount() + pdMS_TO_TICKS(30000U);
+  TickType_t next_gnss_upload_attempt = 0U;
+  TickType_t next_rfid_upload_attempt = 0U;
   uint32_t delivered_gnss_generation = 0U;
   bool prefer_gnss = true;
 
@@ -404,23 +460,43 @@ void online_loop(const char *post_topic) {
     const bool gnss_pending =
         fix.generation != 0U &&
         fix.generation != delivered_gnss_generation;
+    const bool gnss_upload_due =
+        gnss_pending &&
+        (int32_t)(now - next_gnss_upload_attempt) >= 0;
 
-    if (gnss_pending && prefer_gnss) {
+    if (gnss_upload_due && prefer_gnss) {
       if (upload_gnss(fix, post_topic)) {
         delivered_gnss_generation = fix.generation;
+        next_gnss_upload_attempt = 0U;
         ESP_LOGI(TAG, "GNSS generation=%lu delivered",
                  (unsigned long)fix.generation);
+      } else {
+        next_gnss_upload_attempt =
+            xTaskGetTickCount() + pdMS_TO_TICKS(kUploadRetryDelayMs);
       }
       prefer_gnss = false;
     } else {
       rfid_store_item_t item = {};
       const esp_err_t ret = rfid_store_peek_oldest(&item);
       if (ret == ESP_OK) {
-        upload_rfid(item, post_topic);
-        prefer_gnss = true;
-      } else if (ret == ESP_ERR_NOT_FOUND && gnss_pending) {
+        if ((int32_t)(now - next_rfid_upload_attempt) >= 0) {
+          if (upload_rfid(item, post_topic)) {
+            next_rfid_upload_attempt = 0U;
+          } else {
+            next_rfid_upload_attempt =
+                xTaskGetTickCount() + pdMS_TO_TICKS(kUploadRetryDelayMs);
+          }
+          prefer_gnss = true;
+        }
+      } else if (ret == ESP_ERR_NOT_FOUND && gnss_upload_due) {
         if (upload_gnss(fix, post_topic)) {
           delivered_gnss_generation = fix.generation;
+          next_gnss_upload_attempt = 0U;
+          ESP_LOGI(TAG, "GNSS generation=%lu delivered",
+                   (unsigned long)fix.generation);
+        } else {
+          next_gnss_upload_attempt =
+              xTaskGetTickCount() + pdMS_TO_TICKS(kUploadRetryDelayMs);
         }
         prefer_gnss = false;
       } else if (ret != ESP_ERR_NOT_FOUND) {
@@ -526,6 +602,12 @@ extern "C" esp_err_t cellular_service_start(void) {
   }
   memset(&s_status, 0, sizeof(s_status));
   s_sim_diagnostics_printed = false;
+  s_gnss_state_seen = false;
+  s_gnss_state = 0U;
+  s_request_id = esp_random();
+  if (s_request_id == 0U) {
+    s_request_id = 1U;
+  }
   s_status.csq = -1;
   const BaseType_t created =
       xTaskCreate(cellular_task, "cellular_service", 16384, nullptr,
