@@ -3,7 +3,6 @@
 #include "app_config.h"
 #include "app_protocol.h"
 #include "board.h"
-#include "cellular_4g.h"
 #include "ch9434.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
@@ -28,7 +27,7 @@ typedef struct {
 
 typedef enum {
   SERIAL_RESPONSE_ROUTE_RADIO = 0,
-  SERIAL_RESPONSE_ROUTE_CELLULAR_4G,
+  SERIAL_RESPONSE_ROUTE_LOCAL_QUEUE,
 } serial_response_route_t;
 
 typedef struct {
@@ -190,7 +189,7 @@ static void poll_rfid_if_due(void) {
   }
   s_rfid_poll_count++;
 
-  write_serial_command(&poll_command, SERIAL_RESPONSE_ROUTE_CELLULAR_4G);
+  write_serial_command(&poll_command, SERIAL_RESPONSE_ROUTE_LOCAL_QUEUE);
   s_next_rfid_poll_tick = now + pdMS_TO_TICKS(APP_RFID_POLL_INTERVAL_MS);
 }
 
@@ -373,7 +372,7 @@ static void enqueue_rfid_tags(const rfid_response_t *response) {
 
   for (uint8_t tag_index = 0U; tag_index < response->count; ++tag_index) {
     format_rfid_tag(response->tags[tag_index], tag_text);
-    ESP_LOGD(TAG, "RFID tag %u/%u for 4G: %.*s", tag_index + 1U,
+    ESP_LOGD(TAG, "RFID tag %u/%u queued for OneNET: %.*s", tag_index + 1U,
              response->count, (int)sizeof(tag_text), (const char *)tag_text);
 
     const esp_err_t ret = rfid_store_enqueue(tag_text, sizeof(tag_text));

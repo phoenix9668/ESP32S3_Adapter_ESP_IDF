@@ -1,6 +1,5 @@
 {
   "C_Cpp.intelliSenseEngine": "default",
-  "idf.portWin": "COM9",
   "idf.adapterTargetName": "esp32s3",
   "idf.openOcdConfigs": [
     "board/esp32s3-builtin.cfg"
@@ -42,12 +41,11 @@
     "algorithm": "c"
   },
   "idf.flashType": "UART",
-  "idf.espIdfPathWin": "c:\\Users\\phoen\\esp\\v5.4\\esp-idf",
-  "idf.toolsPathWin": "c:\\Users\\phoen\\esp\\v5.4\\tools",
-  "idf.pythonInstallPath": "/Library/Developer/CommandLineTools/Library/Frameworks/Python3.framework/Versions/3.9/bin/python3",
-  "idf.espIdfPath": "/Users/gally/esp/v5.4.2/esp-idf",
+  "idf.pythonInstallPath": "/Users/gally/.espressif/python_env/idf5.5_py3.12_env/bin/python",
+  "idf.pythonBinPath": "/Users/gally/.espressif/python_env/idf5.5_py3.12_env/bin/python",
+  "idf.espIdfPath": "/Users/gally/.espressif/v5.5.4/esp-idf",
   "idf.toolsPath": "/Users/gally/.espressif",
-  "idf.currentSetup": "C:\\esp\\v5.5.4\\esp-idf",
+  "idf.currentSetup": "/Users/gally/.espressif/v5.5.4/esp-idf",
   "idf.port": "/dev/tty.usbmodem1301",
   "clangd.path": "/Users/gally/.espressif/tools/esp-clang/esp-19.1.2_20250312/esp-clang/bin/clangd",
   "clangd.arguments": [

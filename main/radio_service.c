@@ -1,6 +1,7 @@
 #include "radio_service.h"
 
 #include "app_config.h"
+#include "app_protocol_stream.h"
 #include "board.h"
 #include "ch9434.h"
 #include "driver/uart.h"
@@ -24,6 +25,7 @@ static const char *TAG = "RADIO";
 static QueueHandle_t s_tx_queue;
 static SemaphoreHandle_t s_uart_mutex;
 static uint8_t s_board_address;
+static app_protocol_stream_t s_rx_stream;
 
 static void radio_tx_task(void *arg);
 static void radio_rx_task(void *arg);
@@ -35,6 +37,7 @@ esp_err_t radio_service_start(uint8_t board_address) {
   }
 
   s_board_address = board_address;
+  app_protocol_stream_init(&s_rx_stream, board_address);
   s_uart_mutex = xSemaphoreCreateMutex();
   if (s_uart_mutex == NULL) {
     return ESP_ERR_NO_MEM;
@@ -130,8 +133,23 @@ static void radio_tx_task(void *arg) {
   }
 }
 
+static void dispatch_radio_packet(const app_packet_view_t *packet,
+                                  void *context) {
+  (void)context;
+  if (packet->type != APP_FRAME_TYPE_RFID) {
+    ESP_LOGW(TAG, "drop unsupported command type=0x%02x", packet->type);
+    return;
+  }
+  const esp_err_t ret = serial_router_submit_command(
+      CH9434_UART_IDX_1, packet->payload, packet->payload_len);
+  if (ret != ESP_OK) {
+    ESP_LOGW(TAG, "failed to enqueue serial command: %s",
+             esp_err_to_name(ret));
+  }
+}
+
 static void radio_rx_task(void *arg) {
-  uint8_t data[APP_PACKET_MAX_LEN];
+  uint8_t data[256];
 
   while (true) {
     const int rx_bytes = uart_read_bytes(
@@ -143,24 +161,8 @@ static void radio_rx_task(void *arg) {
     ESP_LOGD(TAG, "received %d bytes from radio", rx_bytes);
     ESP_LOG_BUFFER_HEXDUMP(TAG, data, rx_bytes, ESP_LOG_DEBUG);
 
-    app_packet_view_t packet;
-    if (!app_protocol_parse_packet(s_board_address, data, (size_t)rx_bytes,
-                                   &packet)) {
-      ESP_LOGW(TAG, "drop invalid radio packet, len=%d", rx_bytes);
-      continue;
-    }
-
-    if (packet.type != APP_FRAME_TYPE_RFID) {
-      ESP_LOGW(TAG, "drop unsupported command type=0x%02x", packet.type);
-      continue;
-    }
-
-    esp_err_t ret = serial_router_submit_command(
-        CH9434_UART_IDX_1, packet.payload, packet.payload_len);
-    if (ret != ESP_OK) {
-      ESP_LOGW(TAG, "failed to enqueue serial command: %s",
-               esp_err_to_name(ret));
-    }
+    app_protocol_stream_feed(&s_rx_stream, data, (size_t)rx_bytes,
+                             dispatch_radio_packet, NULL);
   }
 }
 

@@ -1,0 +1,8 @@
+key,type,encoding,value
+onenet,namespace,,
+broker_host,data,string,REPLACE_WITH_ONENET_MQTT_HOST
+broker_port,data,u16,1883
+product_id,data,string,REPLACE_WITH_PRODUCT_ID
+device_name,data,string,REPLACE_WITH_DEVICE_NAME
+access_key,data,string,REPLACE_WITH_BASE64_ACCESS_KEY
+token_expiry,data,u64,REPLACE_WITH_UNIX_EXPIRY

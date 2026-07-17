@@ -5,6 +5,10 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 typedef enum {
   BOARD_LED_GREEN = 0,
   BOARD_LED_BLUE,
@@ -20,5 +24,9 @@ uint8_t board_get_address(void);
 void board_led_set(board_led_t led, bool on);
 void board_blue_led_pulse(uint32_t duration_ms);
 void board_rs485_set_direction(uint8_t channel, board_rs485_dir_t direction);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // BOARD_H

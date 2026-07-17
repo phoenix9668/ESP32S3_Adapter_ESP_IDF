@@ -1,11 +1,11 @@
 # Codex Migration Handoff
 
-Updated: 2026-07-16
+Updated: 2026-07-17
 
 Use this note when moving future work into the `ESP32S3_Adapter_ESP_IDF`
 project conversation.
 
-## Current Decision
+## Current Decision and Status
 
 The hardware scheme changed:
 
@@ -13,6 +13,10 @@ The hardware scheme changed:
 - ML307C runs AT firmware.
 - Stop developing `ESP32S3_Adapter_QuecPython`.
 - Continue all new firmware work in `ESP32S3_Adapter_ESP_IDF`.
+- H2.3/BAT and H2.4/EN remain physically disconnected.
+- The first ML307C/OneNET/GNSS single-firmware implementation is complete on
+  `wireless-module`; remaining work is hardware provisioning and integration
+  testing.
 
 ## Active Repository
 
@@ -26,17 +30,8 @@ Current active branch:
 wireless-module
 ```
 
-Current head:
-
-```text
-07978f1 feat: parse and queue multiple RFID tags per response
-```
-
-Current uncommitted state at migration time:
-
-- `doc/` has been populated with ML307C/current-project documents.
-- Build outputs and `.DS_Store` files may exist locally; do not commit them
-  unless intentionally requested.
+The repository now ignores generated ESP-IDF configuration exports, build
+outputs, local OneNET credentials, and `.DS_Store` files.
 
 ## Documentation Now Lives Here
 
@@ -62,11 +57,10 @@ doc/legacy/
 
 Treat those as old-design reference only.
 
-## Current Firmware Shape
+## Pre-refactor Firmware Shape (Historical)
 
-The current `wireless-module` branch is the active implementation branch for
-the 4G/RFID/cloud scheme. It already contains the old EG800K/QuecPython 4G
-integration that must be converted to ML307C AT control.
+The following describes the EG800K baseline that was replaced and is retained
+only to explain the migration:
 
 - CH9434 UART0 receives instrument/weight frames and forwards them through E34.
 - CH9434 UART1 polls the RFID reader.
@@ -100,22 +94,30 @@ state machine and an ESP-IDF owned OneNET upload flow.
   its own AT/network/cloud state.
 - GNSS commands include `AT+MGNSS=1`, `AT+MGNSSLOC=1`, and `AT+MGNSSLOC`.
 
-## Next Engineering Target
+## Implemented Firmware Shape
 
-Implement ML307C support in ESP-IDF:
+- `components/esp_ml307` and `components/uart_uhci` are vendored at recorded
+  upstream commits and use UART2 on GPIO43/44.
+- `main/cellular_service.cc` owns modem detection, SIM/registration/PDP
+  readiness, MQTT connection, exponential reconnect, GNSS/RFID scheduling,
+  and the green network LED.
+- `main/onenet_config.c` reads credentials from the `onenet` NVS namespace;
+  `main/onenet_token.c` generates the HMAC-SHA256 token locally.
+- RFID remains flash-backed FIFO and is removed only after a matching OneNET
+  reply ID with `code=200`.
+- `main/gnss_ml307c.c` parses `+MGNSSLOC`, including empty fields and signed
+  NMEA degree-minute coordinates. Only the latest generation is retained.
+- `main/app_protocol_stream.c` keeps the existing E34 frame format while
+  handling fragmented, concatenated, noise-prefixed, and CRC-damaged streams.
+- Host tests cover the protocol parsers, OneNET token vector, reply matching,
+  GNSS coordinate cases, RFID multi-tag parsing, FIFO order, and reboot
+  recovery.
 
-1. Replace or refactor `cellular_4g.c` into a UART/AT transaction layer for
-   ML307C.
-2. Add a cellular state machine for SIM, registration, PDP, and cloud state.
-3. Add OneNET upload through ML307C AT MQTT or HTTP commands.
-4. Require platform confirmation before deleting queued data.
-5. Add GNSS location parsing from `+MGNSSLOC` or NMEA.
-6. Reintroduce RFID multi-tag parsing and flash-backed offline queue.
-7. Drive green LED from actual online state.
-8. Pulse blue LED only when a valid RFID tag is read.
+## Remaining Hardware Work
 
-Missing input before full cloud implementation:
-
-- ML307C AT command manual for network/PDP/MQTT/HTTP commands.
-- Confirm final OneNET access method: MQTT over AT, HTTP over AT, or another
-  module-supported transport.
+1. Generate and flash the local OneNET NVS image.
+2. Verify ML307C AT communication and core-board UART voltage levels.
+3. Exercise registration/PDP/MQTT, RFID confirmation, and 120-second GNSS
+   uploads on hardware.
+4. Inject network loss, non-200 replies, reboots, and queue backlog while
+   observing that RFID records remain pending until cloud confirmation.

@@ -1,6 +1,6 @@
 # ESP32S3 Adapter V2 ML307C Project Context
 
-Updated: 2026-07-16
+Updated: 2026-07-17
 
 ## Direction
 
@@ -21,7 +21,24 @@ New design:
 - ESP32-S3 must own the AT command state machine, network state, cloud upload,
   GNSS polling/report parsing, RFID offline queue, and LED behavior.
 
-## Current ESP-IDF Repository State
+## Implementation Status
+
+The single-firmware refactor is implemented on `wireless-module`:
+
+- ML307C uses UART2, GPIO43 TX and GPIO44 RX at 115200 baud.
+- H2.3/BAT and H2.4/EN are intentionally disconnected; firmware contains no
+  GPIO power-cycle path.
+- OneNET credentials live only in the `onenet` NVS namespace and the device
+  generates its HMAC-SHA256 token at runtime.
+- MQTT property uploads use QoS 0 and are committed locally only after the
+  reply topic returns the matching request ID with `code=200`.
+- RFID remains a persistent FIFO with at-least-once delivery.
+- GNSS is queried every 120 seconds and uses latest-only generation tracking.
+- E34 retains the original wire format with a stream-safe receiver.
+- The build is pinned to ESP-IDF v5.5.4 and rejects other versions during
+  CMake configuration.
+
+## Pre-refactor Repository State (Historical)
 
 Repository:
 
@@ -41,10 +58,8 @@ Current head when this handoff was written:
 07978f1 feat: parse and queue multiple RFID tags per response
 ```
 
-The current `wireless-module` branch already contains the previous
-EG800K/QuecPython-oriented 4G implementation. The next step is to keep the
-useful ESP32-S3-side pieces and replace the EG800K peer protocol with an
-ML307C AT command driver.
+This section records the EG800K/QuecPython baseline that existed before the
+current implementation:
 
 - `main/main.c`: composition root.
 - `main/board.c`: LEDs, address switches, and RS485 direction GPIOs.
@@ -212,21 +227,17 @@ The old 4G branch implemented the right delivery shape:
 For the current hardware, the RFID tag sent to the cloud should be the first
 8 bytes of the parsed 12-byte tag record, encoded as uppercase hex.
 
-## New ESP-IDF Implementation Direction
-
-Recommended refactor/new modules:
+## Implemented ESP-IDF Modules
 
 | Module | Responsibility |
 |---|---|
-| `modem_ml307c.c/.h` | Replace or wrap `cellular_4g.c` with UART driver, AT transaction layer, URC parser, and power control. |
-| `onenet_client.c/.h` | OneNET property payloads, publish confirmation matching. |
-| `gnss_ml307c.c/.h` | GNSS AT setup, `+MGNSSLOC` parsing, location model. |
-| `rfid_store.c/.h` | Keep and adapt the existing flash-backed FIFO queue for offline RFID records. |
-| `rfid_response.c/.h` | Keep the existing RFID multi-tag response parser unless the reader protocol changes. |
-| `cellular_service.c/.h` | Network state machine, retry policy, LED state, upload scheduling. |
-
-The ML307C AT command manual for TCP/MQTT/HTTP is still needed. The copied GNSS
-manual covers GNSS commands, but not the full data-service and MQTT command set.
+| `components/esp_ml307` | ML307C AT, PDP and MQTT transport with local UART2/raw-field compatibility patches. |
+| `cellular_service.cc/.h` | Network state machine, retry policy, OneNET publishing, scheduling and C-compatible status API. |
+| `onenet_config.c/.h` | NVS configuration and HMAC-SHA256 token generation. |
+| `onenet_reply.c/.h` | OneNET reply ID/code parsing. |
+| `gnss_ml307c.c/.h` | GNSS setup, `+MGNSSLOC` parsing and latest snapshot model. |
+| `rfid_store.c/.h` | Flash-backed FIFO consumed directly by the OneNET service. |
+| `app_protocol_stream.c/.h` | Stream-safe E34 frame accumulation and resynchronization. |
 
 ## LED Behavior Target
 

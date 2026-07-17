@@ -2,14 +2,24 @@ idf_component_register(
     SRCS
         "main.c"
         "app_protocol.c"
+        "app_protocol_stream.c"
         "board.c"
-        "cellular_4g.c"
-        "cellular_4g_protocol.c"
+        "cellular_service.cc"
         "ch9434.c"
         "e34_2g4d20d.c"
+        "gnss_ml307c.c"
+        "onenet_config.c"
+        "onenet_reply.c"
+        "onenet_token.c"
         "radio_service.c"
         "rfid_response.c"
         "rfid_store.c"
         "serial_router.c"
     INCLUDE_DIRS "."
+    REQUIRES
+        esp_driver_spi
+        esp_ml307
+        json
+        mbedtls
+        nvs_flash
 )

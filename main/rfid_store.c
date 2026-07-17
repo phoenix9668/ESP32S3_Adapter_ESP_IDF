@@ -2,13 +2,11 @@
 
 #include "app_config.h"
 #include "app_protocol.h"
-#include "cellular_4g.h"
 
 #include "esp_log.h"
 #include "esp_partition.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
-#include "freertos/task.h"
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -325,95 +323,6 @@ static esp_err_t mark_delivered(uint32_t sequence) {
   return ESP_OK;
 }
 
-static bool cloud_online(void) {
-  cellular_4g_status_t status;
-  return cellular_4g_get_status(&status) && status.has_complete_status &&
-         !status.communication_stale && status.latest.state == 5U &&
-         status.latest.pdp == 1U && status.latest.mqtt == 2U;
-}
-
-static void rfid_replay_task(void *arg) {
-  (void)arg;
-
-  while (true) {
-    rfid_store_record_t record;
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    const esp_err_t peek_ret = peek_record(&record);
-    xSemaphoreGive(s_lock);
-    if (peek_ret == ESP_ERR_NOT_FOUND) {
-      vTaskDelay(pdMS_TO_TICKS(APP_RFID_REPLAY_IDLE_MS));
-      continue;
-    }
-    if (peek_ret != ESP_OK) {
-      ESP_LOGE(TAG, "failed to read pending RFID record: %s",
-               esp_err_to_name(peek_ret));
-      vTaskDelay(pdMS_TO_TICKS(APP_RFID_REPLAY_RETRY_MS));
-      continue;
-    }
-
-    uint32_t ack_sequence;
-    bool already_acked = false;
-    while (cellular_4g_wait_for_rfid_ack(&ack_sequence, 0U)) {
-      if (ack_sequence == record.sequence) {
-        already_acked = true;
-      }
-    }
-
-    if (!already_acked && !cloud_online()) {
-      vTaskDelay(pdMS_TO_TICKS(APP_RFID_REPLAY_IDLE_MS));
-      continue;
-    }
-
-    if (!already_acked) {
-      const esp_err_t send_ret =
-          cellular_4g_send_rfid(record.sequence, record.payload, record.length);
-      if (send_ret != ESP_OK) {
-        ESP_LOGW(TAG, "RFID seq=%lu send failed: %s",
-                 (unsigned long)record.sequence, esp_err_to_name(send_ret));
-        vTaskDelay(pdMS_TO_TICKS(APP_RFID_REPLAY_RETRY_MS));
-        continue;
-      }
-
-      ESP_LOGI(TAG, "RFID seq=%lu sent, awaiting cloud ACK",
-               (unsigned long)record.sequence);
-      const TickType_t started = xTaskGetTickCount();
-      const TickType_t timeout = pdMS_TO_TICKS(APP_RFID_ACK_TIMEOUT_MS);
-      while (xTaskGetTickCount() - started < timeout) {
-        const TickType_t remaining = timeout - (xTaskGetTickCount() - started);
-        if (!cellular_4g_wait_for_rfid_ack(&ack_sequence, remaining)) {
-          break;
-        }
-        if (ack_sequence == record.sequence) {
-          already_acked = true;
-          break;
-        }
-      }
-    }
-
-    if (!already_acked) {
-      ESP_LOGW(TAG, "RFID seq=%lu ACK timeout; record retained",
-               (unsigned long)record.sequence);
-      vTaskDelay(pdMS_TO_TICKS(APP_RFID_REPLAY_RETRY_MS));
-      continue;
-    }
-
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    const esp_err_t delivered_ret = mark_delivered(record.sequence);
-    const size_t remaining_count = s_pending_count;
-    xSemaphoreGive(s_lock);
-    if (delivered_ret != ESP_OK) {
-      ESP_LOGE(TAG, "failed to mark RFID seq=%lu delivered: %s",
-               (unsigned long)record.sequence, esp_err_to_name(delivered_ret));
-      vTaskDelay(pdMS_TO_TICKS(APP_RFID_REPLAY_RETRY_MS));
-      continue;
-    }
-
-    ESP_LOGI(TAG, "RFID seq=%lu cloud ACK received, pending=%u",
-             (unsigned long)record.sequence, (unsigned)remaining_count);
-    vTaskDelay(pdMS_TO_TICKS(APP_RFID_REPLAY_GAP_MS));
-  }
-}
-
 esp_err_t rfid_store_init(void) {
   if (s_initialized) {
     return ESP_OK;
@@ -438,15 +347,6 @@ esp_err_t rfid_store_init(void) {
     vSemaphoreDelete(s_lock);
     s_lock = NULL;
     return ret;
-  }
-
-  const BaseType_t task_created =
-      xTaskCreate(rfid_replay_task, "rfid_replay", APP_TASK_STACK_DEFAULT, NULL,
-                  tskIDLE_PRIORITY + 4, NULL);
-  if (task_created != pdPASS) {
-    vSemaphoreDelete(s_lock);
-    s_lock = NULL;
-    return ESP_ERR_NO_MEM;
   }
 
   s_initialized = true;
@@ -494,6 +394,36 @@ esp_err_t rfid_store_enqueue(const uint8_t *tag, size_t length) {
   return ret;
 }
 
+esp_err_t rfid_store_peek_oldest(rfid_store_item_t *item) {
+  if (!s_initialized) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  if (item == NULL) {
+    return ESP_ERR_INVALID_ARG;
+  }
+
+  rfid_store_record_t record;
+  xSemaphoreTake(s_lock, portMAX_DELAY);
+  const esp_err_t ret = peek_record(&record);
+  if (ret == ESP_OK) {
+    item->sequence = record.sequence;
+    item->length = record.length;
+    memcpy(item->payload, record.payload, record.length);
+  }
+  xSemaphoreGive(s_lock);
+  return ret;
+}
+
+esp_err_t rfid_store_mark_delivered(uint32_t sequence) {
+  if (!s_initialized) {
+    return ESP_ERR_INVALID_STATE;
+  }
+  xSemaphoreTake(s_lock, portMAX_DELAY);
+  const esp_err_t ret = mark_delivered(sequence);
+  xSemaphoreGive(s_lock);
+  return ret;
+}
+
 size_t rfid_store_pending_count(void) {
   if (!s_initialized) {
     return 0U;
@@ -503,3 +433,19 @@ size_t rfid_store_pending_count(void) {
   xSemaphoreGive(s_lock);
   return count;
 }
+
+#ifdef RFID_STORE_HOST_TEST
+void rfid_store_test_reset_runtime(void) {
+  if (s_lock != NULL) {
+    vSemaphoreDelete(s_lock);
+  }
+  s_partition = NULL;
+  s_lock = NULL;
+  s_initialized = false;
+  s_slot_count = 0U;
+  s_head_slot = 0U;
+  s_tail_slot = 0U;
+  s_pending_count = 0U;
+  s_next_sequence = 0U;
+}
+#endif

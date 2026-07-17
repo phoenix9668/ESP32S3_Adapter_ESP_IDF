@@ -11,3 +11,11 @@ compile_commands.json
 CTestTestfile.cmake
 _deps
 .cache
+.DS_Store
+tools/onenet_nvs.csv
+build/onenet_nvs.bin
+config.env
+config/
+kconfigs.in
+kconfigs_projbuild.in
+sdkconfig.old
