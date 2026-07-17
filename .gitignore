@@ -1,6 +1,7 @@
 CMakeLists.txt.user
 CMakeCache.txt
 build/
+build-host/
 CMakeFiles
 CMakeScripts
 Testing
@@ -19,3 +20,4 @@ config/
 kconfigs.in
 kconfigs_projbuild.in
 sdkconfig.old
+tmp/

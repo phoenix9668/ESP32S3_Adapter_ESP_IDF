@@ -46,7 +46,6 @@
   "idf.espIdfPath": "/Users/gally/.espressif/v5.5.4/esp-idf",
   "idf.toolsPath": "/Users/gally/.espressif",
   "idf.currentSetup": "/Users/gally/.espressif/v5.5.4/esp-idf",
-  "idf.port": "/dev/tty.usbmodem1301",
   "clangd.path": "/Users/gally/.espressif/tools/esp-clang/esp-19.1.2_20250312/esp-clang/bin/clangd",
   "clangd.arguments": [
     "--background-index",

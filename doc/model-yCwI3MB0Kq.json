@@ -1,0 +1,254 @@
+{
+  "version": "1.0",
+  "profile": {
+    "industryId": "1",
+    "sceneId": "14",
+    "categoryId": "314",
+    "productId": "yCwI3MB0Kq"
+  },
+  "properties": [
+    {
+      "identifier": "altitude",
+      "name": "海拔",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "海拔",
+      "dataType": {
+        "type": "double",
+        "specs": {
+          "max": "10000",
+          "min": "-500",
+          "step": "0.1",
+          "unit": "米 / m"
+        }
+      },
+      "functionMode": "property",
+      "required": false
+    },
+    {
+      "identifier": "course_deg",
+      "name": "航向角",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "航向角度",
+      "dataType": {
+        "type": "double",
+        "specs": {
+          "max": "360",
+          "min": "0",
+          "step": "0.1",
+          "unit": "度 / °"
+        }
+      },
+      "functionMode": "property",
+      "required": false
+    },
+    {
+      "identifier": "fix_status",
+      "name": "定位状态",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "1=定位有效，0=无有效定位",
+      "dataType": {
+        "type": "int32",
+        "specs": {
+          "max": "1",
+          "min": "0",
+          "step": "1",
+          "unit": "无"
+        }
+      },
+      "functionMode": "property",
+      "required": false
+    },
+    {
+      "identifier": "hdop",
+      "name": "HDOP",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "水平精度因子",
+      "dataType": {
+        "type": "double",
+        "specs": {
+          "max": "99",
+          "min": "0",
+          "step": "0.1",
+          "unit": "无"
+        }
+      },
+      "functionMode": "property",
+      "required": false
+    },
+    {
+      "identifier": "latitude",
+      "name": "纬度",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "纬度",
+      "dataType": {
+        "type": "double",
+        "specs": {
+          "max": "90",
+          "min": "-90",
+          "step": "0.000001",
+          "unit": "度 / °"
+        }
+      },
+      "functionMode": "property",
+      "required": false
+    },
+    {
+      "identifier": "longitude",
+      "name": "经度",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "经度",
+      "dataType": {
+        "type": "double",
+        "specs": {
+          "max": "180",
+          "min": "-180",
+          "step": "0.000001",
+          "unit": "度 / °"
+        }
+      },
+      "functionMode": "property",
+      "required": false
+    },
+    {
+      "identifier": "rfid_tag_id",
+      "name": "RFID标签号",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "ESP32S3 通过串口发送的 RFID 标签 UID/卡号",
+      "dataType": {
+        "type": "string",
+        "specs": {
+          "length": 64
+        }
+      },
+      "functionMode": "property",
+      "required": false
+    },
+    {
+      "identifier": "satellites",
+      "name": "卫星数",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "参与定位卫星数",
+      "dataType": {
+        "type": "int32",
+        "specs": {
+          "max": "99",
+          "min": "0",
+          "step": "1",
+          "unit": "无"
+        }
+      },
+      "functionMode": "property",
+      "required": false
+    },
+    {
+      "identifier": "sim_csq",
+      "name": "SIM信号值",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "net.csqQueryPoll()，正常 0-31，越大越好，99 异常",
+      "dataType": {
+        "type": "int32",
+        "specs": {
+          "max": "99",
+          "min": "-1",
+          "step": "1",
+          "unit": "无"
+        }
+      },
+      "functionMode": "property",
+      "required": false
+    },
+    {
+      "identifier": "sim_iccid",
+      "name": "ICCID",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "SIM 卡 ICCID",
+      "dataType": {
+        "type": "string",
+        "specs": {
+          "length": 32
+        }
+      },
+      "functionMode": "property",
+      "required": false
+    },
+    {
+      "identifier": "sim_imsi",
+      "name": "IMSI",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "SIM 卡 IMSI",
+      "dataType": {
+        "type": "string",
+        "specs": {
+          "length": 32
+        }
+      },
+      "functionMode": "property",
+      "required": false
+    },
+    {
+      "identifier": "sim_status",
+      "name": "SIM状态",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "sim.getStatus() 原始状态码，1 表示 SIM ready",
+      "dataType": {
+        "type": "int32",
+        "specs": {
+          "max": "21",
+          "min": "-1",
+          "step": "1",
+          "unit": "无"
+        }
+      },
+      "functionMode": "property",
+      "required": false
+    },
+    {
+      "identifier": "speed_kph",
+      "name": "地速",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "地速",
+      "dataType": {
+        "type": "double",
+        "specs": {
+          "max": "1000",
+          "min": "0",
+          "step": "0.1",
+          "unit": "千米每小时 / km/h"
+        }
+      },
+      "functionMode": "property",
+      "required": false
+    },
+    {
+      "identifier": "utc_time",
+      "name": "UTC时间",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "GNSS UTC时间",
+      "dataType": {
+        "type": "string",
+        "specs": {
+          "length": 64
+        }
+      },
+      "functionMode": "property",
+      "required": false
+    }
+  ],
+  "events": [],
+  "services": [],
+  "combs": []
+}
