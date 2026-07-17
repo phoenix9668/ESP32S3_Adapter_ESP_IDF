@@ -26,7 +26,10 @@ namespace {
 
 constexpr gpio_num_t kModemTxPin = GPIO_NUM_43;
 constexpr gpio_num_t kModemRxPin = GPIO_NUM_44;
-constexpr uart_port_t kModemUart = UART_NUM_2;
+// GPIO43/44 are the ESP32-S3 module's native U0TXD/U0RXD pins (physical
+// pins 37/36). The console is routed through USB Serial/JTAG, leaving UART0
+// dedicated to the directly connected ML307C while UART1 remains for E34.
+constexpr uart_port_t kModemUart = UART_NUM_0;
 constexpr int kModemBaudRate = 115200;
 constexpr int kNetworkReadyTimeoutMs = 60000;
 constexpr int kOneNetKeepAliveSeconds = 300;
@@ -40,6 +43,7 @@ constexpr size_t kOneNetPayloadMax = 1024U;
 const char *TAG = "CELLULAR";
 
 bool s_started;
+bool s_sim_diagnostics_printed;
 TaskHandle_t s_task;
 EventGroupHandle_t s_events;
 portMUX_TYPE s_status_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -73,6 +77,36 @@ void probe_modem_rx_idle_level() {
     ESP_LOGI(TAG, "ML307 TX idle is high on GPIO44; RX path is electrically present");
   }
   gpio_reset_pin(kModemRxPin);
+}
+
+void print_sim_diagnostics(const std::shared_ptr<AtUart> &uart) {
+  if (!uart || s_sim_diagnostics_printed) {
+    return;
+  }
+
+  // Enable raw AT logging only for this credential-free, read-only command
+  // group. Disable it before any OneNET MQTT command can contain a token.
+  static constexpr const char *kCommands[] = {
+      "AT+CPIN?",   // SIM/PIN state
+      "AT+ICCID",   // SIM ICCID
+      "AT+CIMI",    // IMSI
+      "AT+CNUM",    // subscriber number, if provisioned by the operator
+      "AT+CSQ",     // radio signal quality
+      "AT+COPS?",   // selected operator
+      "AT+CGATT?",  // packet-domain attach state
+      "AT+CEREG?",  // EPS registration state
+  };
+
+  ESP_LOGI(TAG, "--- ML307C SIM/network diagnostics begin ---");
+  uart->SetDebug(true);
+  for (const char *command : kCommands) {
+    if (!uart->SendCommand(command, 2000)) {
+      ESP_LOGW(TAG, "SIM diagnostic command failed: %s", command);
+    }
+  }
+  uart->SetDebug(false);
+  ESP_LOGI(TAG, "--- ML307C SIM/network diagnostics end ---");
+  s_sim_diagnostics_printed = true;
 }
 
 void set_status(cellular_state_t state, int error = 0) {
@@ -438,6 +472,7 @@ void cellular_task(void *) {
     } else {
       set_modem_status(true, false, false, false);
       s_modem->GetAtUart()->RegisterUrcCallback(handle_gnss_urc);
+      print_sim_diagnostics(s_modem->GetAtUart());
       set_status(CELLULAR_STATE_NETWORK_ATTACHING);
       const NetworkStatus network =
           s_modem->WaitForNetworkReady(kNetworkReadyTimeoutMs);
@@ -490,6 +525,7 @@ extern "C" esp_err_t cellular_service_start(void) {
     return ESP_ERR_NO_MEM;
   }
   memset(&s_status, 0, sizeof(s_status));
+  s_sim_diagnostics_printed = false;
   s_status.csq = -1;
   const BaseType_t created =
       xTaskCreate(cellular_task, "cellular_service", 16384, nullptr,

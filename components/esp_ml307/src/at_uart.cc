@@ -458,68 +458,39 @@ void AtUart::HandleUrc(const std::string& command, const std::vector<AtArgumentV
     }
 }
 
-bool AtUart::DetectBaudRate(int timeout_ms) {
-    constexpr size_t kProbeTimeoutMs = 250;
-    constexpr int kPreferredRateProbeAttempts = 4;
-    constexpr int kOtherRateProbeAttempts = 2;
-    int baud_rates[] = {115200, 921600, 460800, 230400, 57600, 38400, 19200, 9600};
-    TickType_t start_time = xTaskGetTickCount();
-    TickType_t timeout_ticks = (timeout_ms == -1) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
-
-    while (true) {
-        ESP_LOGI(TAG, "Detecting baud rate...");
-        for (size_t i = 0; i < sizeof(baud_rates) / sizeof(baud_rates[0]); i++) {
-            int rate = baud_rates[i];
-            uart_set_baudrate(uart_num_, rate);
-            // ML307C defaults to auto-baud mode and may consume the first AT
-            // only to lock the rate. Keep the line at one rate long enough for
-            // a subsequent AT to receive OK before trying another rate.
-            const int attempts = (i == 0) ? kPreferredRateProbeAttempts
-                                          : kOtherRateProbeAttempts;
-            for (int attempt = 0; attempt < attempts; ++attempt) {
-                // 20 ms from the upstream implementation is too short once
-                // other board services are running and can make a valid OK
-                // arrive after the probe has switched to another baud rate.
-                if (SendCommand("AT", kProbeTimeoutMs)) {
-                    ESP_LOGI(TAG, "Detected baud rate: %d", rate);
-                    baud_rate_ = rate;
-                    return true;
-                }
-                vTaskDelay(pdMS_TO_TICKS(50));
-            }
-        }
-
-        // Check timeout before delay if specified
-        if (timeout_ms != -1) {
-            TickType_t elapsed = xTaskGetTickCount() - start_time;
-            if (elapsed >= timeout_ticks) {
-                ESP_LOGE(TAG, "Baud rate detection timeout");
-                return false;
-            }
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(1000));
-    }
-    return false;
-}
-
 bool AtUart::SetBaudRate(int new_baud_rate, int timeout_ms) {
-    if (!DetectBaudRate(timeout_ms)) {
-        ESP_LOGE(TAG, "Failed to detect baud rate");
+    if (!initialized_ || new_baud_rate <= 0) {
+        ESP_LOGE(TAG, "Cannot configure fixed baud rate: initialized=%d baud=%d",
+                 initialized_, new_baud_rate);
         return false;
     }
-    if (new_baud_rate == baud_rate_) {
-        return true;
-    }
-    // Set new baud rate
-    if (!SendCommand(std::string("AT+IPR=") + std::to_string(new_baud_rate))) {
-        ESP_LOGI(TAG, "Failed to set baud rate to %d", new_baud_rate);
+
+    esp_err_t ret = uart_set_baudrate(uart_num_, new_baud_rate);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to configure UART%d at %d baud: %s",
+                 uart_num_, new_baud_rate, esp_err_to_name(ret));
         return false;
     }
-    uart_set_baudrate(uart_num_, new_baud_rate);
     baud_rate_ = new_baud_rate;
-    ESP_LOGI(TAG, "Set baud rate to %d", new_baud_rate);
-    return true;
+
+    const TickType_t start = xTaskGetTickCount();
+    const TickType_t timeout_ticks = timeout_ms < 0
+        ? portMAX_DELAY
+        : pdMS_TO_TICKS(timeout_ms);
+    ESP_LOGI(TAG, "Probing modem on UART%d at fixed %d baud", uart_num_, baud_rate_);
+    do {
+        if (SendCommand("AT", 500)) {
+            ESP_LOGI(TAG, "Modem responded on UART%d at fixed %d baud",
+                     uart_num_, baud_rate_);
+            return true;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    } while (timeout_ms < 0 ||
+             (xTaskGetTickCount() - start) < timeout_ticks);
+
+    ESP_LOGE(TAG, "No AT response on UART%d at fixed %d baud",
+             uart_num_, baud_rate_);
+    return false;
 }
 
 bool AtUart::SendData(const char* data, size_t length) {

@@ -25,7 +25,9 @@ New design:
 
 The single-firmware refactor is implemented on `wireless-module`:
 
-- ML307C uses UART2, GPIO43 TX and GPIO44 RX at 115200 baud.
+- ML307C uses fixed 115200-baud UART0 on GPIO43 TX and GPIO44 RX. These are
+  ESP32-S3-WROOM-1 physical pins 37 (TXD0) and 36 (RXD0); the console uses USB
+  Serial/JTAG, and UART1 remains dedicated to E34.
 - H2.3/BAT and H2.4/EN are intentionally disconnected; firmware contains no
   GPIO power-cycle path.
 - OneNET credentials live only in the `onenet` NVS namespace and the device
@@ -231,7 +233,7 @@ For the current hardware, the RFID tag sent to the cloud should be the first
 
 | Module | Responsibility |
 |---|---|
-| `components/esp_ml307` | ML307C AT, PDP and MQTT transport with local UART2/raw-field compatibility patches. |
+| `components/esp_ml307` | ML307C AT, PDP and MQTT transport with fixed-UART0/raw-field compatibility patches. |
 | `cellular_service.cc/.h` | Network state machine, retry policy, OneNET publishing, scheduling and C-compatible status API. |
 | `onenet_config.c/.h` | NVS configuration and HMAC-SHA256 token generation. |
 | `onenet_reply.c/.h` | OneNET reply ID/code parsing. |

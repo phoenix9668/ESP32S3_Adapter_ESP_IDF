@@ -97,7 +97,8 @@ state machine and an ESP-IDF owned OneNET upload flow.
 ## Implemented Firmware Shape
 
 - `components/esp_ml307` and `components/uart_uhci` are vendored at recorded
-  upstream commits and use UART2 on GPIO43/44.
+  upstream commits and use fixed 115200-baud UART0 on GPIO43/44. The console
+  is routed through USB Serial/JTAG, and UART1 remains dedicated to E34.
 - `main/cellular_service.cc` owns modem detection, SIM/registration/PDP
   readiness, MQTT connection, exponential reconnect, GNSS/RFID scheduling,
   and the green network LED.

@@ -135,7 +135,6 @@ private:
     void ReceiveTask();   // Task for receiving data from DMA queue
     void EventTask();     // Task for parsing response and handling events
     bool ParseResponse();
-    bool DetectBaudRate(int timeout_ms = -1);
     // Handle URC
     void HandleUrc(const std::string& command, const std::vector<AtArgumentValue>& arguments);
     bool SendData(const char* data, size_t length);
