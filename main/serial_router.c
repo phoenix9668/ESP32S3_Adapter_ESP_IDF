@@ -56,7 +56,7 @@ static bool process_pending_commands(void);
 static void poll_rfid_if_due(void);
 static void write_serial_command(const serial_command_t *command,
                                  serial_response_route_t response_route);
-static void wait_for_tx_drain(uint8_t uart_idx, size_t bytes);
+static void wait_for_tx_idle(uint8_t uart_idx);
 static void process_ch9434_interrupts(void);
 static void read_uart_fifo(uint8_t uart_idx);
 static void handle_rx_chunk(uint8_t uart_idx, const uint8_t *data,
@@ -83,6 +83,8 @@ esp_err_t serial_router_init(void) {
 }
 
 esp_err_t serial_router_start(void) {
+  esp_log_level_set(TAG, ESP_LOG_INFO);
+
   esp_err_t ret = serial_router_init();
   if (ret != ESP_OK) {
     return ret;
@@ -205,37 +207,26 @@ static void write_serial_command(const serial_command_t *command,
   CH9434UARTxSetTxFIFOData(command->uart_idx, command->data,
                            (uint16_t)command->length);
   s_response_route[command->uart_idx] = response_route;
-  wait_for_tx_drain(command->uart_idx, command->length);
+  wait_for_tx_idle(command->uart_idx);
 
   board_rs485_set_direction(command->uart_idx, BOARD_RS485_RX);
 }
 
-static void wait_for_tx_drain(uint8_t uart_idx, size_t bytes) {
+static void wait_for_tx_idle(uint8_t uart_idx) {
   const TickType_t start = xTaskGetTickCount();
   const TickType_t timeout = pdMS_TO_TICKS(APP_RS485_TX_DONE_TIMEOUT_MS);
-  uint16_t tx_fifo_len = 0;
-  bool drained = false;
+  uint8_t lsr = 0U;
 
   while ((xTaskGetTickCount() - start) < timeout) {
-    tx_fifo_len = CH9434UARTxGetTxFIFOLen(uart_idx);
-    if (tx_fifo_len == 0) {
-      drained = true;
-      break;
+    lsr = CH9434UARTxReadLSR(uart_idx);
+    if ((lsr & CH9434_UARTx_LSR_TEMT) != 0U) {
+      return;
     }
     vTaskDelay(pdMS_TO_TICKS(1));
   }
 
-  if (!drained) {
-    ESP_LOGW(TAG, "uart%u tx fifo not empty after %ums, remaining=%u", uart_idx,
-             (unsigned)APP_RS485_TX_DONE_TIMEOUT_MS, (unsigned)tx_fifo_len);
-  }
-
-  const uint32_t bps = uart_idx == CH9434_UART_IDX_0 ? UART_BPS_ID0 : UART_BPS;
-  uint32_t hold_ms = (uint32_t)((bytes * 11U * 1000U + bps - 1U) / bps) + 1U;
-  if (hold_ms < APP_RS485_TX_HOLD_MIN_MS) {
-    hold_ms = APP_RS485_TX_HOLD_MIN_MS;
-  }
-  vTaskDelay(pdMS_TO_TICKS(hold_ms));
+  ESP_LOGW(TAG, "uart%u transmitter not idle after %ums, lsr=0x%02x", uart_idx,
+           (unsigned)APP_RS485_TX_DONE_TIMEOUT_MS, lsr);
 }
 
 static void process_ch9434_interrupts(void) {
@@ -363,7 +354,7 @@ static void handle_rfid_frame(const uint8_t *data, size_t length,
   }
 
   board_blue_led_pulse(APP_RFID_LED_PULSE_MS);
-  ESP_LOGD(TAG, "RFID response tags=%u", response.count);
+  ESP_LOGI(TAG, "RFID response tags=%u", response.count);
   enqueue_rfid_tags(&response);
 }
 
@@ -372,7 +363,7 @@ static void enqueue_rfid_tags(const rfid_response_t *response) {
 
   for (uint8_t tag_index = 0U; tag_index < response->count; ++tag_index) {
     format_rfid_tag(response->tags[tag_index], tag_text);
-    ESP_LOGD(TAG, "RFID tag %u/%u queued for OneNET: %.*s", tag_index + 1U,
+    ESP_LOGI(TAG, "RFID tag %u/%u queued for OneNET: %.*s", tag_index + 1U,
              response->count, (int)sizeof(tag_text), (const char *)tag_text);
 
     const esp_err_t ret = rfid_store_enqueue(tag_text, sizeof(tag_text));
