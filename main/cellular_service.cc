@@ -63,6 +63,17 @@ char s_reply_topic[256] = {};
 std::unique_ptr<AtModem> s_modem;
 std::unique_ptr<Mqtt> s_mqtt;
 
+struct SimSnapshot {
+  bool ready;
+  int csq;
+  int status;
+  char iccid[33];
+  char imsi[33];
+};
+
+SimSnapshot s_sim_snapshot = {};
+bool s_sim_snapshot_delivered;
+
 void probe_modem_rx_idle_level() {
   gpio_config_t config = {};
   config.pin_bit_mask = 1ULL << kModemRxPin;
@@ -94,7 +105,6 @@ void print_sim_diagnostics(const std::shared_ptr<AtUart> &uart) {
       "AT+CPIN?",   // SIM/PIN state
       "AT+ICCID",   // SIM ICCID
       "AT+CIMI",    // IMSI
-      "AT+CNUM",    // subscriber number, if provisioned by the operator
       "AT+CSQ",     // radio signal quality
       "AT+COPS?",   // selected operator
       "AT+CGATT?",  // packet-domain attach state
@@ -162,6 +172,56 @@ void update_csq() {
   taskENTER_CRITICAL(&s_status_lock);
   s_status.csq = csq;
   taskEXIT_CRITICAL(&s_status_lock);
+}
+
+bool copy_decimal_identifier(const std::string &source, char *destination,
+                             size_t destination_size) {
+  if (source.empty() || source.size() >= destination_size) {
+    return false;
+  }
+  for (const char value : source) {
+    if (value < '0' || value > '9') {
+      return false;
+    }
+  }
+  memcpy(destination, source.data(), source.size());
+  destination[source.size()] = '\0';
+  return true;
+}
+
+bool collect_sim_snapshot() {
+  if (!s_modem) {
+    return false;
+  }
+
+  SimSnapshot snapshot = {};
+  snapshot.csq = s_modem->GetCsq();
+  snapshot.status = s_modem->pin_ready() ? 1 : 0;
+  const std::string iccid = s_modem->GetIccid();
+  const auto uart = s_modem->GetAtUart();
+  const bool imsi_command_ok = uart->SendCommand("AT+CIMI", 2000);
+  const std::string imsi = imsi_command_ok ? uart->GetResponse() : "";
+
+  const bool csq_valid = snapshot.csq >= 0 && snapshot.csq <= 99;
+  const bool iccid_valid =
+      copy_decimal_identifier(iccid, snapshot.iccid, sizeof(snapshot.iccid));
+  const bool imsi_valid =
+      copy_decimal_identifier(imsi, snapshot.imsi, sizeof(snapshot.imsi));
+  snapshot.ready = csq_valid && snapshot.status == 1 && iccid_valid && imsi_valid;
+  if (!snapshot.ready) {
+    ESP_LOGW(TAG,
+             "SIM snapshot incomplete: ready=%d csq=%d iccid_len=%u "
+             "imsi_len=%u",
+             snapshot.status == 1, snapshot.csq, (unsigned)iccid.size(),
+             (unsigned)imsi.size());
+    return false;
+  }
+
+  s_sim_snapshot = snapshot;
+  ESP_LOGI(TAG, "SIM snapshot captured: csq=%d iccid_len=%u imsi_len=%u",
+           snapshot.csq, (unsigned)strlen(snapshot.iccid),
+           (unsigned)strlen(snapshot.imsi));
+  return true;
 }
 
 void handle_gnss_urc(const std::string &command,
@@ -348,6 +408,27 @@ bool upload_gnss(const gnss_fix_t &fix, const char *post_topic) {
          publish_confirmed(request_id, payload, post_topic);
 }
 
+bool upload_sim_snapshot(const char *post_topic) {
+  if (!s_sim_snapshot.ready) {
+    return false;
+  }
+
+  char request_id[16];
+  next_request_id(request_id, sizeof(request_id));
+  char payload[kOneNetPayloadMax];
+  const int written = snprintf(
+      payload, sizeof(payload),
+      "{\"id\":\"%s\",\"version\":\"1.0\",\"params\":{"
+      "\"sim_csq\":{\"value\":%d},"
+      "\"sim_status\":{\"value\":%d},"
+      "\"sim_iccid\":{\"value\":\"%s\"},"
+      "\"sim_imsi\":{\"value\":\"%s\"}}}",
+      request_id, s_sim_snapshot.csq, s_sim_snapshot.status,
+      s_sim_snapshot.iccid, s_sim_snapshot.imsi);
+  return written >= 0 && (size_t)written < sizeof(payload) &&
+         publish_confirmed(request_id, payload, post_topic);
+}
+
 bool configure_gnss() {
   const auto uart = s_modem->GetAtUart();
   if (!uart->SendCommand("AT+MGNSSLOC=0", 3000)) {
@@ -434,6 +515,7 @@ void online_loop(const char *post_topic) {
       xTaskGetTickCount() + pdMS_TO_TICKS(30000U);
   TickType_t next_gnss_upload_attempt = 0U;
   TickType_t next_rfid_upload_attempt = 0U;
+  TickType_t next_sim_upload_attempt = 0U;
   uint32_t delivered_gnss_generation = 0U;
   bool prefer_gnss = true;
 
@@ -453,6 +535,20 @@ void online_loop(const char *post_topic) {
       }
       update_csq();
       next_mqtt_check = now + pdMS_TO_TICKS(30000U);
+    }
+
+    const bool sim_upload_due =
+        s_sim_snapshot.ready && !s_sim_snapshot_delivered &&
+        (int32_t)(now - next_sim_upload_attempt) >= 0;
+    if (sim_upload_due) {
+      if (upload_sim_snapshot(post_topic)) {
+        s_sim_snapshot_delivered = true;
+        next_sim_upload_attempt = 0U;
+        ESP_LOGI(TAG, "SIM snapshot delivered");
+      } else {
+        next_sim_upload_attempt =
+            xTaskGetTickCount() + pdMS_TO_TICKS(kUploadRetryDelayMs);
+      }
     }
 
     gnss_fix_t fix = {};
@@ -556,6 +652,12 @@ void cellular_task(void *) {
         set_modem_status(true, true, true, true);
         configure_gnss();
         update_csq();
+        if (!s_sim_snapshot.ready) {
+          for (unsigned attempt = 0U;
+               attempt < 3U && !collect_sim_snapshot(); ++attempt) {
+            vTaskDelay(pdMS_TO_TICKS(250U));
+          }
+        }
         set_status(CELLULAR_STATE_MQTT_CONNECTING);
         char post_topic[256];
         if (connect_cloud(config, token, post_topic, sizeof(post_topic))) {
@@ -602,6 +704,10 @@ extern "C" esp_err_t cellular_service_start(void) {
   }
   memset(&s_status, 0, sizeof(s_status));
   s_sim_diagnostics_printed = false;
+  memset(&s_sim_snapshot, 0, sizeof(s_sim_snapshot));
+  s_sim_snapshot.csq = -1;
+  s_sim_snapshot.status = -1;
+  s_sim_snapshot_delivered = false;
   s_gnss_state_seen = false;
   s_gnss_state = 0U;
   s_request_id = esp_random();

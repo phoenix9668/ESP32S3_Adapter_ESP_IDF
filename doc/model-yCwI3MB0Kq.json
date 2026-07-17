@@ -153,7 +153,7 @@
       "name": "SIM信号值",
       "functionType": "u",
       "accessMode": "rw",
-      "desc": "net.csqQueryPoll()，正常 0-31，越大越好，99 异常",
+      "desc": "ML307C AT+CSQ 信号质量，正常 0-31，越大越好，99 表示未知",
       "dataType": {
         "type": "int32",
         "specs": {
@@ -201,12 +201,12 @@
       "name": "SIM状态",
       "functionType": "u",
       "accessMode": "rw",
-      "desc": "sim.getStatus() 原始状态码，1 表示 SIM ready",
+      "desc": "ML307C SIM 状态，1 表示 READY，0 表示未就绪",
       "dataType": {
         "type": "int32",
         "specs": {
-          "max": "21",
-          "min": "-1",
+          "max": "1",
+          "min": "0",
           "step": "1",
           "unit": "无"
         }
