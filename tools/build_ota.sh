@@ -12,6 +12,15 @@ if [[ ! "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z]+)*$ ]] || [[ ${#
   exit 2
 fi
 
+# OneNET rejects upload filenames longer than 20 characters.  Keep the
+# platform-facing artifact short while retaining the complete version.
+OUT_BASENAME="s3-${VERSION}.bin"
+if [[ ${#OUT_BASENAME} -gt 20 ]]; then
+  echo "OneNET OTA filename would exceed 20 characters: ${OUT_BASENAME}" >&2
+  echo "Use a target version no longer than 13 characters." >&2
+  exit 2
+fi
+
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 IDF_PATH="/Users/gally/.espressif/v5.5.4/esp-idf"
 IDF_TOOLS_PATH="/Users/gally/.espressif"
@@ -19,8 +28,8 @@ KEY_PATH="${OTA_SIGNING_KEY:-${PROJECT_DIR}/keys/ota_signing_key.pem}"
 CONFIGURED_KEY_PATH="${PROJECT_DIR}/keys/ota_signing_key.pem"
 OUT_DIR="${PROJECT_DIR}/dist"
 APP_BIN="${PROJECT_DIR}/build/ESP32S3_Adapter_ESP_IDF.bin"
-OUT_BIN="${OUT_DIR}/esp32s3-adapter-${VERSION}.bin"
-MANIFEST="${OUT_DIR}/esp32s3-adapter-${VERSION}.manifest.json"
+OUT_BIN="${OUT_DIR}/${OUT_BASENAME}"
+MANIFEST="${OUT_DIR}/s3-${VERSION}.manifest.json"
 
 if [[ ! -f "${KEY_PATH}" ]]; then
   echo "Missing OTA signing key: ${KEY_PATH}" >&2

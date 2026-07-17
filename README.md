@@ -278,8 +278,8 @@ tools/build_ota.sh 1.1.0
 生成：
 
 ```text
-dist/esp32s3-adapter-1.1.0.bin
-dist/esp32s3-adapter-1.1.0.manifest.json
+dist/s3-1.1.0.bin
+dist/s3-1.1.0.manifest.json
 ```
 
 只把第一个 `.bin` 上传 OneNET。manifest 留在本地用于核对版本、大小、MD5、
@@ -297,7 +297,11 @@ QuecPython 的单文件 `main.py.bin`，但它只写非活动 OTA 应用分区�
 - 升级模块：MCU 软件/应用软件
 - 类型：SOTA 完整包
 - 目标版本：必须与脚本参数和镜像内版本完全一致，例如 `1.1.0`
-- 文件：`esp32s3-adapter-1.1.0.bin`
+- 文件：`s3-1.1.0.bin`
+
+OneNET 要求上传文件名为 1–20 个英文字母、数字、点、连字符或下划线。
+发布脚本使用短文件名 `s3-{version}.bin` 并在构建前检查长度；不要把本地
+`.manifest.json`、merged factory image、bootloader 或分区表上传为升级包。
 
 先只选择 `wireless-module-001` 做验证升级，通知方式选择 MQTT。设备应依次出现：
 版本上报、任务检查、分片下载进度、100%、重启、新版本运行、最终成功。
