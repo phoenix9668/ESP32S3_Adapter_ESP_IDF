@@ -30,9 +30,10 @@ Ml307Mqtt::Ml307Mqtt(std::shared_ptr<AtUart> at_uart, int mqtt_id) : at_uart_(at
                         }
                         xEventGroupSetBits(event_group_handle_, MQTT_DISCONNECTED_EVENT);
                     }
-                    if (error_code == 5 || error_code == 6) {
+                    if (error_code != 0) {
                         auto error_message = ErrorToString(error_code);
-                        ESP_LOGW(TAG, "MQTT error occurred: %s", error_message.c_str());
+                        ESP_LOGW(TAG, "MQTT connection event id=%d code=%d: %s",
+                                 mqtt_id_, error_code, error_message.c_str());
                         if (on_error_callback_) {
                             on_error_callback_(error_message);
                         }
@@ -86,6 +87,14 @@ bool Ml307Mqtt::Connect(const std::string broker_address, int broker_port, const
         }
     }
 
+    // OneNET accepts MQTT 3.1.1.  ML307 stores MQTT client settings across
+    // sessions, so do not rely on the module's factory/default value here.
+    if (!at_uart_->SendCommand(std::string("AT+MQTTCFG=\"version\",") +
+                               std::to_string(mqtt_id_) + ",4")) {
+        ESP_LOGE(TAG, "Failed to set MQTT protocol version to 3.1.1");
+        return false;
+    }
+
     // Set clean session
     if (!at_uart_->SendCommand(std::string("AT+MQTTCFG=\"clean\",") + std::to_string(mqtt_id_) + ",1")) {
         ESP_LOGE(TAG, "Failed to set MQTT clean session");
@@ -109,6 +118,10 @@ bool Ml307Mqtt::Connect(const std::string broker_address, int broker_port, const
     }
 
     xEventGroupClearBits(event_group_handle_, MQTT_CONNECTED_EVENT | MQTT_DISCONNECTED_EVENT);
+    last_error_ = 0;
+    ESP_LOGI(TAG, "Connecting id=%d broker=%s:%d client=%s username=%s",
+             mqtt_id_, broker_address.c_str(), broker_port,
+             client_id.c_str(), username.c_str());
     // 创建MQTT连接
     std::string command = "AT+MQTTCONN=" + std::to_string(mqtt_id_) + ",\"" + broker_address + "\"," + std::to_string(broker_port) + ",\"" + client_id + "\",\"" + username + "\",\"" + password + "\"";
     if (!at_uart_->SendCommand(command)) {
@@ -119,7 +132,8 @@ bool Ml307Mqtt::Connect(const std::string broker_address, int broker_port, const
     // 等待连接完成
     bits = xEventGroupWaitBits(event_group_handle_, MQTT_CONNECTED_EVENT | MQTT_DISCONNECTED_EVENT, pdTRUE, pdFALSE, pdMS_TO_TICKS(MQTT_CONNECT_TIMEOUT_MS));
     if (!(bits & MQTT_CONNECTED_EVENT)) {
-        ESP_LOGE(TAG, "Failed to connect to MQTT broker");
+        ESP_LOGE(TAG, "Failed to connect to MQTT broker: code=%d (%s)",
+                 last_error_, ErrorToString(last_error_).c_str());
         return false;
     }
     return true;

@@ -4,6 +4,7 @@
 #include <string.h>
 
 #define ONENET_NVS_NAMESPACE "onenet"
+
 static esp_err_t read_required_string(nvs_handle_t handle, const char *key,
                                       char *output, size_t output_size) {
   size_t required = output_size;
@@ -39,15 +40,31 @@ esp_err_t onenet_config_load(onenet_config_t *config) {
                                sizeof(config->device_name));
   }
   if (ret == ESP_OK) {
-    ret = read_required_string(handle, "access_key", config->access_key,
-                               sizeof(config->access_key));
+    ret = read_required_string(handle, "device_key", config->device_key,
+                               sizeof(config->device_key));
+    if (ret == ESP_ERR_NVS_NOT_FOUND) {
+      ret = read_required_string(handle, "access_key", config->device_key,
+                                 sizeof(config->device_key));
+    }
   }
   if (ret == ESP_OK) {
-    ret = nvs_get_u64(handle, "token_expiry", &config->token_expiry);
+    ret = nvs_get_u32(handle, "token_ttl", &config->token_ttl);
+    if (ret == ESP_ERR_NVS_NOT_FOUND) {
+      uint64_t legacy_expiry = 0U;
+      const esp_err_t legacy_ret =
+          nvs_get_u64(handle, "token_expiry", &legacy_expiry);
+      if (legacy_ret == ESP_OK || legacy_ret == ESP_ERR_NVS_NOT_FOUND) {
+        config->token_ttl = ONENET_DEFAULT_TOKEN_TTL_SECONDS;
+        ret = ESP_OK;
+      } else {
+        ret = legacy_ret;
+      }
+    }
   }
   nvs_close(handle);
   if (ret == ESP_OK &&
-      (config->broker_port == 0U || config->token_expiry == 0U)) {
+      (config->broker_port == 0U || config->token_ttl == 0U ||
+       config->token_ttl > 7U * 24U * 60U * 60U)) {
     ret = ESP_ERR_INVALID_ARG;
   }
   return ret;

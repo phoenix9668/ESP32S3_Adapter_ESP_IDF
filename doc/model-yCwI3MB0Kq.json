@@ -62,6 +62,21 @@
       "required": false
     },
     {
+      "identifier": "firmware_version",
+      "name": "固件版本",
+      "functionType": "u",
+      "accessMode": "r",
+      "desc": "ESP32-S3 当前运行的应用固件版本",
+      "dataType": {
+        "type": "string",
+        "specs": {
+          "length": 32
+        }
+      },
+      "functionMode": "property",
+      "required": false
+    },
+    {
       "identifier": "hdop",
       "name": "HDOP",
       "functionType": "u",

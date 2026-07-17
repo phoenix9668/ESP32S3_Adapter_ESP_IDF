@@ -3,6 +3,7 @@
 #include "cellular_service.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "onenet_ota_service.h"
 #include "radio_service.h"
 #include "rfid_store.h"
 #include "serial_router.h"
@@ -24,5 +25,10 @@ void app_main(void) {
   if (cellular_ret != ESP_OK) {
     ESP_LOGE(TAG, "cellular service unavailable: %s",
              esp_err_to_name(cellular_ret));
+  }
+  const esp_err_t ota_guard_ret = onenet_ota_boot_guard_start();
+  if (ota_guard_ret != ESP_OK) {
+    ESP_LOGE(TAG, "OTA boot guard unavailable: %s",
+             esp_err_to_name(ota_guard_ret));
   }
 }

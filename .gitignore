@@ -14,6 +14,7 @@ _deps
 .cache
 .DS_Store
 tools/onenet_nvs.csv
+tools/onenet_nvs_*.csv
 build/onenet_nvs.bin
 config.env
 config/
@@ -21,3 +22,10 @@ kconfigs.in
 kconfigs_projbuild.in
 sdkconfig.old
 tmp/
+.factory/
+dist/
+keys/*.pem
+tools/fleet_config.json
+tools/*audit*.csv
+__pycache__/
+*.pyc

@@ -8,7 +8,6 @@
 #include <string.h>
 
 #define ONENET_AUTH_VERSION "2018-10-31"
-#define ONENET_AUTH_METHOD "sha256"
 
 static bool url_unreserved(unsigned char value) {
   return isalnum(value) || value == '-' || value == '_' || value == '.' ||
@@ -38,7 +37,9 @@ static esp_err_t url_encode(const unsigned char *input, size_t input_len,
   return ESP_OK;
 }
 
-esp_err_t onenet_generate_token(const onenet_config_t *config, char *token,
+static esp_err_t generate_token(const onenet_config_t *config,
+                                uint64_t expires_at, const char *method,
+                                mbedtls_md_type_t digest_type, char *token,
                                 size_t token_size) {
   if (config == NULL || token == NULL || token_size == 0U) {
     return ESP_ERR_INVALID_ARG;
@@ -51,28 +52,28 @@ esp_err_t onenet_generate_token(const onenet_config_t *config, char *token,
   }
   char expiry[24];
   written = snprintf(expiry, sizeof(expiry), "%llu",
-                     (unsigned long long)config->token_expiry);
+                     (unsigned long long)expires_at);
   if (written < 0 || (size_t)written >= sizeof(expiry)) {
     return ESP_ERR_INVALID_SIZE;
   }
   char sign_source[320];
   written = snprintf(sign_source, sizeof(sign_source), "%s\n%s\n%s\n%s",
-                     expiry, ONENET_AUTH_METHOD, resource,
-                     ONENET_AUTH_VERSION);
+                     expiry, method, resource, ONENET_AUTH_VERSION);
   if (written < 0 || (size_t)written >= sizeof(sign_source)) {
     return ESP_ERR_INVALID_SIZE;
   }
 
-  unsigned char decoded_key[ONENET_ACCESS_KEY_MAX_LEN];
+  unsigned char decoded_key[ONENET_DEVICE_KEY_MAX_LEN];
   size_t decoded_key_len = 0U;
   if (mbedtls_base64_decode(decoded_key, sizeof(decoded_key), &decoded_key_len,
-                            (const unsigned char *)config->access_key,
-                            strlen(config->access_key)) != 0) {
+                            (const unsigned char *)config->device_key,
+                            strlen(config->device_key)) != 0) {
     return ESP_ERR_INVALID_ARG;
   }
   const mbedtls_md_info_t *info =
-      mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
-  unsigned char digest[32];
+      mbedtls_md_info_from_type(digest_type);
+  unsigned char digest[MBEDTLS_MD_MAX_SIZE];
+  const size_t digest_size = info == NULL ? 0U : mbedtls_md_get_size(info);
   if (info == NULL ||
       mbedtls_md_hmac(info, decoded_key, decoded_key_len,
                       (const unsigned char *)sign_source, strlen(sign_source),
@@ -83,7 +84,7 @@ esp_err_t onenet_generate_token(const onenet_config_t *config, char *token,
   unsigned char signature_base64[64];
   size_t signature_len = 0U;
   if (mbedtls_base64_encode(signature_base64, sizeof(signature_base64),
-                            &signature_len, digest, sizeof(digest)) != 0) {
+                            &signature_len, digest, digest_size) != 0) {
     return ESP_FAIL;
   }
   char encoded_resource[576];
@@ -100,7 +101,21 @@ esp_err_t onenet_generate_token(const onenet_config_t *config, char *token,
   written = snprintf(token, token_size,
                      "version=%s&res=%s&et=%s&method=%s&sign=%s",
                      ONENET_AUTH_VERSION, encoded_resource, expiry,
-                     ONENET_AUTH_METHOD, encoded_signature);
+                     method, encoded_signature);
   return written < 0 || (size_t)written >= token_size ? ESP_ERR_INVALID_SIZE
                                                        : ESP_OK;
+}
+
+esp_err_t onenet_generate_mqtt_token(const onenet_config_t *config,
+                                     uint64_t expires_at, char *token,
+                                     size_t token_size) {
+  return generate_token(config, expires_at, "sha256", MBEDTLS_MD_SHA256,
+                        token, token_size);
+}
+
+esp_err_t onenet_generate_ota_token(const onenet_config_t *config,
+                                    uint64_t expires_at, char *token,
+                                    size_t token_size) {
+  return generate_token(config, expires_at, "sha1", MBEDTLS_MD_SHA1, token,
+                        token_size);
 }

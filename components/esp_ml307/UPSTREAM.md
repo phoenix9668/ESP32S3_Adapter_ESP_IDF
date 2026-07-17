@@ -8,5 +8,5 @@
 Local compatibility changes are intentionally limited to selecting a UART
 port at runtime, preserving raw AT argument fields, safely parsing empty
 arguments, declaring the local UART-UHCI dependency, defensive MQTT URC
-bounds checking, and refusing to report the data network ready until an IP
-address is present.
+bounds checking, explicitly selecting MQTT 3.1.1 before connecting, and
+refusing to report the data network ready until an IP address is present.

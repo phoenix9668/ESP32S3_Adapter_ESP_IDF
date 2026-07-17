@@ -1,4 +1,5 @@
 #include "at_uart.h"
+#include "at_parser.h"
 #include <esp_log.h>
 #include <esp_err.h>
 #include <esp_pm.h>
@@ -410,7 +411,10 @@ bool AtUart::ParseResponse() {
         std::vector<AtArgumentValue> arguments;
         size_t field_start = 0;
         while (field_start <= values.size()) {
-            const size_t comma = values.find(',', field_start);
+            // AT responses use CSV-like fields. A quoted field may itself
+            // contain commas (for example +CCLK: "yy/MM/dd,hh:mm:ss+zz"),
+            // so only treat commas outside quotes as separators.
+            const size_t comma = at_find_unquoted_comma(values, field_start);
             std::string item = values.substr(field_start,
                 comma == std::string::npos ? std::string::npos : comma - field_start);
             AtArgumentValue argument;

@@ -195,6 +195,7 @@ Previously used property identifiers:
 | Identifier | Purpose |
 |---|---|
 | `fix_status` | GNSS fix validity |
+| `firmware_version` | ESP32-S3 application version shown on the OneNET property page |
 | `latitude` | Latitude |
 | `longitude` | Longitude |
 | `altitude` | Altitude |

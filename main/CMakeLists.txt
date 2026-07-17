@@ -9,7 +9,10 @@ idf_component_register(
         "e34_2g4d20d.c"
         "gnss_ml307c.c"
         "onenet_config.c"
+        "onenet_ota_protocol.c"
+        "onenet_ota_service.cc"
         "onenet_reply.c"
+        "onenet_time.c"
         "onenet_token.c"
         "radio_service.c"
         "rfid_response.c"
@@ -17,8 +20,10 @@ idf_component_register(
         "serial_router.c"
     INCLUDE_DIRS "."
     REQUIRES
+        app_update
         esp_driver_spi
         esp_ml307
+        esp_partition
         json
         mbedtls
         nvs_flash

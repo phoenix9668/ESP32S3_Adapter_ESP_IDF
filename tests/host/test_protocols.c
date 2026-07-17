@@ -2,7 +2,9 @@
 #include "app_protocol_stream.h"
 #include "gnss_ml307c.h"
 #include "onenet_config.h"
+#include "onenet_ota_protocol.h"
 #include "onenet_reply.h"
+#include "onenet_time.h"
 #include "rfid_response.h"
 
 #include <assert.h>
@@ -183,15 +185,66 @@ static void test_onenet_token_vector(void) {
   onenet_config_t config = {};
   strcpy(config.product_id, "test-product");
   strcpy(config.device_name, "test-device");
-  strcpy(config.access_key, "dGVzdC1rZXk=");
-  config.token_expiry = 1893456000ULL;
+  strcpy(config.device_key, "dGVzdC1rZXk=");
   char token[ONENET_TOKEN_MAX_LEN];
-  assert(onenet_generate_token(&config, token, sizeof(token)) == ESP_OK);
+  assert(onenet_generate_mqtt_token(&config, 1893456000ULL, token,
+                                    sizeof(token)) == ESP_OK);
   assert(strcmp(
              token,
              "version=2018-10-31&res=products%2Ftest-product%2Fdevices%2F"
              "test-device&et=1893456000&method=sha256&sign="
              "Lupe049xpJG17%2B7KQHCIHxYy2CTX%2BHYi%2BFt9LoIYyfk%3D") == 0);
+
+  assert(onenet_generate_ota_token(&config, 1893456000ULL, token,
+                                   sizeof(token)) == ESP_OK);
+  assert(strcmp(
+             token,
+             "version=2018-10-31&res=products%2Ftest-product%2Fdevices%2F"
+             "test-device&et=1893456000&method=sha1&sign="
+             "SMnYQ%2F3hxwrnfgWAihw6qNFIrEY%3D") == 0);
+}
+
+static void test_onenet_network_clock(void) {
+  uint64_t epoch = 0U;
+  assert(onenet_time_parse_cclk("26/07/17,12:34:56+32", &epoch));
+  /* ML307C's clock digits are UTC; +32 is retained NITZ metadata. */
+  assert(epoch == 1784291696ULL);
+  assert(onenet_time_parse_cclk("\"26/01/02,03:04:05+00\"", &epoch));
+  assert(epoch == 1767323045ULL);
+  assert(!onenet_time_parse_cclk("23/01/02,03:04:05+00", &epoch));
+  assert(!onenet_time_parse_cclk("26/02/30,03:04:05+00", &epoch));
+}
+
+static void test_onenet_ota_protocol(void) {
+  assert(onenet_ota_version_is_newer("1.0.1", "1.0.0"));
+  assert(onenet_ota_version_is_newer("2.0.0", "1.99.99"));
+  assert(!onenet_ota_version_is_newer("1.0.0", "1.0.0"));
+  assert(!onenet_ota_version_is_newer("0.9.9", "1.0.0"));
+  assert(onenet_ota_version_is_newer("1.0.0", "1.0.0-rc1"));
+
+  char id[16];
+  const char inform[] =
+      "{\"id\":\"ota-42\",\"version\":\"1.0\",\"params\":[]}";
+  assert(onenet_ota_parse_inform_id(inform, strlen(inform), id,
+                                    sizeof(id)));
+  assert(strcmp(id, "ota-42") == 0);
+
+  const char task_json[] =
+      "{\"code\":0,\"msg\":\"succ\",\"data\":{"
+      "\"target\":\"1.1.0\",\"tid\":12,\"size\":1048576,"
+      "\"md5\":\"0123456789ABCDEF0123456789ABCDEF\",\"type\":1}}";
+  onenet_ota_task_t task = {};
+  assert(onenet_ota_parse_task(task_json, strlen(task_json), "1.0.0",
+                               4U * 1024U * 1024U, &task));
+  assert(strcmp(task.task_id, "12") == 0);
+  assert(strcmp(task.target_version, "1.1.0") == 0);
+  assert(strcmp(task.md5, "0123456789abcdef0123456789abcdef") == 0);
+  assert(task.size == 1048576U);
+
+  assert(!onenet_ota_parse_task(task_json, strlen(task_json), "1.1.0",
+                                4U * 1024U * 1024U, &task));
+  assert(!onenet_ota_parse_task(task_json, strlen(task_json), "1.0.0",
+                                512U * 1024U, &task));
 }
 
 int main(void) {
@@ -204,6 +257,8 @@ int main(void) {
   test_rfid_multiple_tags();
   test_onenet_reply_matching();
   test_onenet_token_vector();
+  test_onenet_network_clock();
+  test_onenet_ota_protocol();
   puts("protocol_tests: all tests passed");
   return 0;
 }

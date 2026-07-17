@@ -21,6 +21,7 @@ typedef enum {
 
 typedef struct {
   cellular_state_t state;
+  bool config_ready;
   bool modem_ready;
   bool sim_ready;
   bool registered;
@@ -31,6 +32,7 @@ typedef struct {
 } cellular_status_t;
 
 esp_err_t cellular_service_start(void);
+bool cellular_service_config_ready(void);
 bool cellular_service_get_status(cellular_status_t *status);
 bool cellular_service_get_latest_gnss(gnss_fix_t *fix);
 

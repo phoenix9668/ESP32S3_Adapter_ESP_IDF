@@ -5,6 +5,7 @@
 #include "board.h"
 #include "driver/gpio.h"
 #include "driver/uart.h"
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_random.h"
 #include "freertos/FreeRTOS.h"
@@ -13,7 +14,9 @@
 #include "mqtt.h"
 #include "nvs_flash.h"
 #include "onenet_config.h"
+#include "onenet_ota_service.hpp"
 #include "onenet_reply.h"
+#include "onenet_time.h"
 #include "rfid_store.h"
 
 #include <algorithm>
@@ -21,6 +24,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <sys/time.h>
 #include <vector>
 
 namespace {
@@ -37,7 +41,9 @@ constexpr int kOneNetKeepAliveSeconds = 300;
 constexpr uint32_t kGnssPollIntervalMs = 120U * 1000U;
 constexpr uint32_t kReplyTimeoutMs = 10U * 1000U;
 constexpr uint32_t kUploadRetryDelayMs = 5U * 1000U;
+constexpr uint32_t kMetadataRetryDelayMs = 60U * 1000U;
 constexpr uint32_t kIdleDelayMs = 250U;
+constexpr uint32_t kOtaServiceIntervalMs = 5U * 1000U;
 constexpr EventBits_t kReplyEvent = BIT0;
 constexpr EventBits_t kDisconnectedEvent = BIT1;
 constexpr size_t kOneNetPayloadMax = 1024U;
@@ -55,6 +61,8 @@ cellular_status_t s_status = {};
 gnss_fix_t s_latest_gnss = {};
 bool s_gnss_state_seen;
 uint8_t s_gnss_state;
+bool s_clock_seen;
+uint64_t s_clock_epoch;
 char s_inflight_id[16] = {};
 int s_reply_code = -1;
 uint32_t s_request_id;
@@ -62,6 +70,7 @@ char s_reply_topic[256] = {};
 
 std::unique_ptr<AtModem> s_modem;
 std::unique_ptr<Mqtt> s_mqtt;
+std::unique_ptr<OneNetOtaService> s_ota;
 
 struct SimSnapshot {
   bool ready;
@@ -221,11 +230,25 @@ bool collect_sim_snapshot() {
   ESP_LOGI(TAG, "SIM snapshot captured: csq=%d iccid_len=%u imsi_len=%u",
            snapshot.csq, (unsigned)strlen(snapshot.iccid),
            (unsigned)strlen(snapshot.imsi));
+  ESP_LOGI(TAG,
+           "FACTORY_STATUS {\"stage\":\"sim\",\"iccid\":\"%s\","
+           "\"ready\":true}",
+           snapshot.iccid);
   return true;
 }
 
 void handle_gnss_urc(const std::string &command,
                      const std::vector<AtArgumentValue> &arguments) {
+  if (command == "CCLK" && !arguments.empty()) {
+    uint64_t epoch = 0U;
+    if (onenet_time_parse_cclk(arguments[0].string_value.c_str(), &epoch)) {
+      taskENTER_CRITICAL(&s_gnss_lock);
+      s_clock_epoch = epoch;
+      s_clock_seen = true;
+      taskEXIT_CRITICAL(&s_gnss_lock);
+    }
+    return;
+  }
   int state = -1;
   if (command == "MGNSS" && !arguments.empty() &&
       arguments[0].type == AtArgumentValue::Type::Int) {
@@ -277,6 +300,9 @@ void handle_gnss_urc(const std::string &command,
 
 void handle_mqtt_message(const std::string &topic,
                          const std::string &payload) {
+  if (s_ota && s_ota->HandleMqttMessage(topic, payload)) {
+    return;
+  }
   if (topic != s_reply_topic) {
     return;
   }
@@ -429,6 +455,25 @@ bool upload_sim_snapshot(const char *post_topic) {
          publish_confirmed(request_id, payload, post_topic);
 }
 
+bool upload_firmware_version(const char *post_topic) {
+  const esp_app_desc_t *description = esp_app_get_description();
+  if (description == nullptr || description->version[0] == '\0') {
+    ESP_LOGE(TAG, "application version is unavailable");
+    return false;
+  }
+
+  char request_id[16];
+  next_request_id(request_id, sizeof(request_id));
+  char payload[kOneNetPayloadMax];
+  const int written = snprintf(
+      payload, sizeof(payload),
+      "{\"id\":\"%s\",\"version\":\"1.0\",\"params\":{"
+      "\"firmware_version\":{\"value\":\"%s\"}}}",
+      request_id, description->version);
+  return written >= 0 && (size_t)written < sizeof(payload) &&
+         publish_confirmed(request_id, payload, post_topic);
+}
+
 bool configure_gnss() {
   const auto uart = s_modem->GetAtUart();
   if (!uart->SendCommand("AT+MGNSSLOC=0", 3000)) {
@@ -469,6 +514,38 @@ bool configure_gnss() {
   return false;
 }
 
+bool synchronize_network_time() {
+  if (!s_modem) {
+    return false;
+  }
+  const auto uart = s_modem->GetAtUart();
+  for (unsigned attempt = 0U; attempt < 5U; ++attempt) {
+    taskENTER_CRITICAL(&s_gnss_lock);
+    s_clock_seen = false;
+    s_clock_epoch = 0U;
+    taskEXIT_CRITICAL(&s_gnss_lock);
+    if (uart->SendCommand("AT+CCLK?", 3000)) {
+      uint64_t epoch = 0U;
+      bool seen = false;
+      taskENTER_CRITICAL(&s_gnss_lock);
+      seen = s_clock_seen;
+      epoch = s_clock_epoch;
+      taskEXIT_CRITICAL(&s_gnss_lock);
+      if (seen) {
+        struct timeval value = {};
+        value.tv_sec = (time_t)epoch;
+        if (settimeofday(&value, nullptr) == 0) {
+          ESP_LOGI(TAG, "system UTC synchronized from ML307 network clock");
+          return true;
+        }
+      }
+    }
+    vTaskDelay(pdMS_TO_TICKS(1000U));
+  }
+  ESP_LOGW(TAG, "ML307 network clock is not valid yet");
+  return false;
+}
+
 bool connect_cloud(const onenet_config_t &config, const char *token,
                    char *post_topic, size_t post_topic_size) {
   const int post_len =
@@ -488,6 +565,8 @@ bool connect_cloud(const onenet_config_t &config, const char *token,
   if (!s_mqtt) {
     return false;
   }
+  s_ota = std::make_unique<OneNetOtaService>(s_modem.get(), s_mqtt.get(),
+                                             config);
   s_mqtt->SetKeepAlive(kOneNetKeepAliveSeconds);
   s_mqtt->OnMessage(handle_mqtt_message);
   s_mqtt->OnDisconnected([]() {
@@ -505,7 +584,17 @@ bool connect_cloud(const onenet_config_t &config, const char *token,
     s_mqtt->Disconnect();
     return false;
   }
+  if (!s_mqtt->Subscribe(s_ota->inform_topic(), 0)) {
+    s_mqtt->Disconnect();
+    return false;
+  }
   set_mqtt_online(true);
+  s_ota->OnOnline();
+  ESP_LOGI(TAG,
+           "FACTORY_STATUS {\"stage\":\"online\",\"device\":\"%s\","
+           "\"iccid\":\"%s\",\"mqtt\":true}",
+           config.device_name,
+           s_sim_snapshot.ready ? s_sim_snapshot.iccid : "");
   return true;
 }
 
@@ -516,11 +605,19 @@ void online_loop(const char *post_topic) {
   TickType_t next_gnss_upload_attempt = 0U;
   TickType_t next_rfid_upload_attempt = 0U;
   TickType_t next_sim_upload_attempt = 0U;
+  TickType_t next_metadata_upload_attempt = 0U;
+  TickType_t next_ota_service = 0U;
   uint32_t delivered_gnss_generation = 0U;
+  bool firmware_version_delivered = false;
   bool prefer_gnss = true;
 
   while (true) {
     const TickType_t now = xTaskGetTickCount();
+    if (s_ota && (int32_t)(now - next_ota_service) >= 0) {
+      s_ota->Service();
+      next_ota_service = xTaskGetTickCount() +
+                         pdMS_TO_TICKS(kOtaServiceIntervalMs);
+    }
     if ((int32_t)(now - next_gnss_poll) >= 0) {
       if (!s_modem->GetAtUart()->SendCommand("AT+MGNSSLOC", 5000)) {
         ESP_LOGW(TAG, "GNSS location query failed");
@@ -535,6 +632,21 @@ void online_loop(const char *post_topic) {
       }
       update_csq();
       next_mqtt_check = now + pdMS_TO_TICKS(30000U);
+    }
+
+    const bool metadata_upload_due =
+        !firmware_version_delivered &&
+        (int32_t)(now - next_metadata_upload_attempt) >= 0;
+    if (metadata_upload_due) {
+      if (upload_firmware_version(post_topic)) {
+        firmware_version_delivered = true;
+        next_metadata_upload_attempt = 0U;
+        ESP_LOGI(TAG, "firmware_version=%s delivered",
+                 esp_app_get_description()->version);
+      } else {
+        next_metadata_upload_attempt =
+            xTaskGetTickCount() + pdMS_TO_TICKS(kMetadataRetryDelayMs);
+      }
     }
 
     const bool sim_upload_due =
@@ -621,16 +733,13 @@ void cellular_task(void *) {
     vTaskDelete(nullptr);
     return;
   }
-
-  char token[ONENET_TOKEN_MAX_LEN];
-  ret = onenet_generate_token(&config, token, sizeof(token));
-  if (ret != ESP_OK) {
-    ESP_LOGE(TAG, "OneNET token generation failed: %s", esp_err_to_name(ret));
-    set_status(CELLULAR_STATE_STOPPED, ret);
-    s_task = nullptr;
-    vTaskDelete(nullptr);
-    return;
-  }
+  ESP_LOGI(TAG,
+           "FACTORY_STATUS {\"stage\":\"nvs\",\"device\":\"%s\","
+           "\"ready\":true}",
+           config.device_name);
+  taskENTER_CRITICAL(&s_status_lock);
+  s_status.config_ready = true;
+  taskEXIT_CRITICAL(&s_status_lock);
 
   uint32_t backoff_ms = 2000U;
   while (true) {
@@ -643,6 +752,8 @@ void cellular_task(void *) {
       set_status(CELLULAR_STATE_BACKOFF, ESP_ERR_NOT_FOUND);
     } else {
       set_modem_status(true, false, false, false);
+      ESP_LOGI(TAG,
+               "FACTORY_STATUS {\"stage\":\"modem\",\"ready\":true}");
       s_modem->GetAtUart()->RegisterUrcCallback(handle_gnss_urc);
       print_sim_diagnostics(s_modem->GetAtUart());
       set_status(CELLULAR_STATE_NETWORK_ATTACHING);
@@ -650,6 +761,10 @@ void cellular_task(void *) {
           s_modem->WaitForNetworkReady(kNetworkReadyTimeoutMs);
       if (network == NetworkStatus::Ready) {
         set_modem_status(true, true, true, true);
+        if (!synchronize_network_time()) {
+          set_status(CELLULAR_STATE_BACKOFF, ESP_ERR_INVALID_STATE);
+          goto reconnect;
+        }
         configure_gnss();
         update_csq();
         if (!s_sim_snapshot.ready) {
@@ -659,6 +774,22 @@ void cellular_task(void *) {
           }
         }
         set_status(CELLULAR_STATE_MQTT_CONNECTING);
+        char token[ONENET_TOKEN_MAX_LEN];
+        const time_t now = time(nullptr);
+        ret = onenet_generate_mqtt_token(
+            &config, (uint64_t)now + config.token_ttl, token, sizeof(token));
+        if (ret != ESP_OK) {
+          ESP_LOGE(TAG, "OneNET token generation failed: %s",
+                   esp_err_to_name(ret));
+          set_status(CELLULAR_STATE_BACKOFF, ret);
+          goto reconnect;
+        }
+        ESP_LOGI(TAG,
+                 "OneNET authorization prepared: utc=%lld expiry=%llu "
+                 "ttl=%lu token_len=%u",
+                 (long long)now,
+                 (unsigned long long)((uint64_t)now + config.token_ttl),
+                 (unsigned long)config.token_ttl, (unsigned)strlen(token));
         char post_topic[256];
         if (connect_cloud(config, token, post_topic, sizeof(post_topic))) {
           backoff_ms = 2000U;
@@ -674,7 +805,9 @@ void cellular_task(void *) {
       }
     }
 
+  reconnect:
     set_mqtt_online(false);
+    s_ota.reset();
     if (s_mqtt) {
       s_mqtt->Disconnect();
       s_mqtt.reset();
@@ -710,6 +843,8 @@ extern "C" esp_err_t cellular_service_start(void) {
   s_sim_snapshot_delivered = false;
   s_gnss_state_seen = false;
   s_gnss_state = 0U;
+  s_clock_seen = false;
+  s_clock_epoch = 0U;
   s_request_id = esp_random();
   if (s_request_id == 0U) {
     s_request_id = 1U;
@@ -737,6 +872,13 @@ extern "C" bool cellular_service_get_status(cellular_status_t *status) {
   *status = s_status;
   taskEXIT_CRITICAL(&s_status_lock);
   return s_started;
+}
+
+extern "C" bool cellular_service_config_ready(void) {
+  taskENTER_CRITICAL(&s_status_lock);
+  const bool ready = s_status.config_ready;
+  taskEXIT_CRITICAL(&s_status_lock);
+  return ready;
 }
 
 extern "C" bool cellular_service_get_latest_gnss(gnss_fix_t *fix) {

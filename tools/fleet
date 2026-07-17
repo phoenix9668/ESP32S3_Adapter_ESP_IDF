@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PYTHON="/Users/gally/.espressif/python_env/idf5.5_py3.12_env/bin/python"
+
+if [[ ! -x "${PYTHON}" ]]; then
+  echo "Missing ESP-IDF v5.5.4 Python environment: ${PYTHON}" >&2
+  exit 1
+fi
+
+exec "${PYTHON}" "${PROJECT_DIR}/tools/fleet.py" "$@"

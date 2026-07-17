@@ -1,0 +1,9 @@
+{
+  "product_id": "REPLACE_WITH_PRODUCT_ID",
+  "broker_host": "REPLACE_WITH_ONENET_MQTT_HOST",
+  "broker_port": 1883,
+  "device_prefix": "wireless-module-",
+  "token_ttl": 3600,
+  "serial_baud": 115200,
+  "verify_timeout_seconds": 240
+}
