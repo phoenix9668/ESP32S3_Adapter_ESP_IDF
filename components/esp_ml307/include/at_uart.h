@@ -102,6 +102,7 @@ private:
     uart_port_t uart_num_;
     int baud_rate_;
     bool initialized_;
+    bool pins_configured_;
     bool dtr_pin_state_;  // Record the current state of the DTR pin
     bool debug_ = false;  // Debug mode flag
     int cme_error_code_ = 0;

@@ -3,6 +3,7 @@
 #include <esp_err.h>
 #include <esp_pm.h>
 #include <esp_sleep.h>
+#include <esp_private/esp_gpio_reserve.h>
 #include <algorithm>
 #include <cstring>
 #include <cstdlib>
@@ -23,7 +24,7 @@ struct RxDataItem {
 AtUart::AtUart(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t dtr_pin,
     gpio_num_t ri_pin, uart_port_t uart_num)
     : tx_pin_(tx_pin), rx_pin_(rx_pin), dtr_pin_(dtr_pin), ri_pin_(ri_pin), uart_num_(uart_num),
-      baud_rate_(115200), initialized_(false), dtr_pin_state_(false),
+      baud_rate_(115200), initialized_(false), pins_configured_(false), dtr_pin_state_(false),
       pm_lock_(nullptr), ri_pm_lock_(nullptr), ri_pm_lock_acquired_(false),
       receive_task_handle_(nullptr), rx_data_queue_(nullptr), event_group_handle_(nullptr) {
     // Create power management lock for DTR operations
@@ -35,6 +36,12 @@ AtUart::AtUart(gpio_num_t tx_pin, gpio_num_t rx_pin, gpio_num_t dtr_pin,
 }
 
 AtUart::~AtUart() {
+    // Stop DMA before deleting queues/tasks that can be reached by its ISR
+    // callbacks. This is particularly important when modem detection retries.
+    if (initialized_) {
+        uart_uhci_.Deinit();
+        initialized_ = false;
+    }
     if (receive_task_handle_) {
         vTaskDelete(receive_task_handle_);
     }
@@ -54,13 +61,25 @@ AtUart::~AtUart() {
         }
         vQueueDelete(rx_data_queue_);
     }
-    if (initialized_) {
-        // Remove RI pin ISR handler if configured
-        if (ri_pin_ != GPIO_NUM_NC) {
-            gpio_isr_handler_remove(ri_pin_);
+    // Remove RI pin ISR handler if configured.
+    if (ri_pin_ != GPIO_NUM_NC) {
+        gpio_isr_handler_remove(ri_pin_);
+    }
+    if (pins_configured_) {
+        // uart_set_pin() reserves matrix output pins but no UART driver is
+        // installed in UHCI mode, so uart_driver_delete() cannot release the
+        // reservation for us. Release/reset both pins before the next retry.
+        uint64_t pin_mask = 0;
+        if (tx_pin_ >= 0) {
+            pin_mask |= 1ULL << tx_pin_;
+            gpio_reset_pin(tx_pin_);
         }
-        // Deinitialize UHCI
-        uart_uhci_.Deinit();
+        if (rx_pin_ >= 0) {
+            pin_mask |= 1ULL << rx_pin_;
+            gpio_reset_pin(rx_pin_);
+        }
+        esp_gpio_revoke(pin_mask);
+        pins_configured_ = false;
     }
     if (ri_pm_lock_) {
         if (ri_pm_lock_acquired_) {
@@ -101,6 +120,7 @@ void AtUart::Initialize() {
 
     ESP_ERROR_CHECK(uart_param_config(uart_num_, &uart_config));
     ESP_ERROR_CHECK(uart_set_pin(uart_num_, tx_pin_, rx_pin_, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+    pins_configured_ = true;
 
     // Enable pull-up on RX pin
     gpio_set_pull_mode(rx_pin_, GPIO_PULLUP_ONLY);
@@ -439,6 +459,9 @@ void AtUart::HandleUrc(const std::string& command, const std::vector<AtArgumentV
 }
 
 bool AtUart::DetectBaudRate(int timeout_ms) {
+    constexpr size_t kProbeTimeoutMs = 250;
+    constexpr int kPreferredRateProbeAttempts = 4;
+    constexpr int kOtherRateProbeAttempts = 2;
     int baud_rates[] = {115200, 921600, 460800, 230400, 57600, 38400, 19200, 9600};
     TickType_t start_time = xTaskGetTickCount();
     TickType_t timeout_ticks = (timeout_ms == -1) ? portMAX_DELAY : pdMS_TO_TICKS(timeout_ms);
@@ -448,10 +471,21 @@ bool AtUart::DetectBaudRate(int timeout_ms) {
         for (size_t i = 0; i < sizeof(baud_rates) / sizeof(baud_rates[0]); i++) {
             int rate = baud_rates[i];
             uart_set_baudrate(uart_num_, rate);
-            if (SendCommand("AT", 20)) {
-                ESP_LOGI(TAG, "Detected baud rate: %d", rate);
-                baud_rate_ = rate;
-                return true;
+            // ML307C defaults to auto-baud mode and may consume the first AT
+            // only to lock the rate. Keep the line at one rate long enough for
+            // a subsequent AT to receive OK before trying another rate.
+            const int attempts = (i == 0) ? kPreferredRateProbeAttempts
+                                          : kOtherRateProbeAttempts;
+            for (int attempt = 0; attempt < attempts; ++attempt) {
+                // 20 ms from the upstream implementation is too short once
+                // other board services are running and can make a valid OK
+                // arrive after the probe has switched to another baud rate.
+                if (SendCommand("AT", kProbeTimeoutMs)) {
+                    ESP_LOGI(TAG, "Detected baud rate: %d", rate);
+                    baud_rate_ = rate;
+                    return true;
+                }
+                vTaskDelay(pdMS_TO_TICKS(50));
             }
         }
 

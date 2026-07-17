@@ -55,6 +55,26 @@ char s_reply_topic[256] = {};
 std::unique_ptr<AtModem> s_modem;
 std::unique_ptr<Mqtt> s_mqtt;
 
+void probe_modem_rx_idle_level() {
+  gpio_config_t config = {};
+  config.pin_bit_mask = 1ULL << kModemRxPin;
+  config.mode = GPIO_MODE_INPUT;
+  config.pull_up_en = GPIO_PULLUP_DISABLE;
+  config.pull_down_en = GPIO_PULLDOWN_ENABLE;
+  config.intr_type = GPIO_INTR_DISABLE;
+  ESP_ERROR_CHECK(gpio_config(&config));
+  vTaskDelay(pdMS_TO_TICKS(20));
+  const int level = gpio_get_level(kModemRxPin);
+  if (level == 0) {
+    ESP_LOGW(TAG,
+             "ML307 TX idle is low with GPIO44 pulldown; verify H2.6-to-TX "
+             "continuity and connector contact");
+  } else {
+    ESP_LOGI(TAG, "ML307 TX idle is high on GPIO44; RX path is electrically present");
+  }
+  gpio_reset_pin(kModemRxPin);
+}
+
 void set_status(cellular_state_t state, int error = 0) {
   taskENTER_CRITICAL(&s_status_lock);
   s_status.state = state;
@@ -383,6 +403,8 @@ void online_loop(const char *post_topic) {
 }
 
 void cellular_task(void *) {
+  probe_modem_rx_idle_level();
+
   onenet_config_t config = {};
   esp_err_t ret = onenet_config_load(&config);
   if (ret != ESP_OK) {
@@ -409,7 +431,7 @@ void cellular_task(void *) {
     set_status(CELLULAR_STATE_MODEM_DETECTING);
     set_modem_status(false, false, false, false);
     s_modem = AtModem::Detect(kModemTxPin, kModemRxPin, GPIO_NUM_NC,
-                              kModemBaudRate, 5000, kModemUart);
+                              kModemBaudRate, 20000, kModemUart);
     if (!s_modem) {
       ESP_LOGW(TAG, "ML307C detection failed");
       set_status(CELLULAR_STATE_BACKOFF, ESP_ERR_NOT_FOUND);
