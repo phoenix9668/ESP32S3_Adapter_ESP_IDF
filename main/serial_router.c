@@ -43,6 +43,10 @@ static const char *TAG = "SERIAL";
 static const uint8_t s_rfid_poll_command[] = {0x04, 0xFF, 0x01, 0x1B, 0xB4};
 
 static QueueHandle_t s_command_queue;
+static TaskHandle_t s_router_task;
+static portMUX_TYPE s_pause_lock = portMUX_INITIALIZER_UNLOCKED;
+static bool s_pause_requested;
+static bool s_pause_applied;
 static frame_accumulator_t s_weight_frame;
 static rfid_frame_accumulator_t s_rfid_frame;
 static uint32_t s_uart_rx_total[APP_CH9434_UART_COUNT];
@@ -58,6 +62,7 @@ static void write_serial_command(const serial_command_t *command,
                                  serial_response_route_t response_route);
 static void wait_for_tx_idle(uint8_t uart_idx);
 static void process_ch9434_interrupts(void);
+static void discard_ch9434_input(void);
 static void read_uart_fifo(uint8_t uart_idx);
 static void handle_rx_chunk(uint8_t uart_idx, const uint8_t *data,
                             size_t length);
@@ -92,7 +97,7 @@ esp_err_t serial_router_start(void) {
 
   BaseType_t ok =
       xTaskCreate(serial_router_task, "serial_router", APP_TASK_STACK_LARGE,
-                  NULL, tskIDLE_PRIORITY + 6, NULL);
+                  NULL, tskIDLE_PRIORITY + 6, &s_router_task);
   if (ok != pdPASS) {
     return ESP_ERR_NO_MEM;
   }
@@ -111,6 +116,9 @@ esp_err_t serial_router_submit_command(uint8_t uart_idx, const uint8_t *data,
       length > APP_PAYLOAD_MAX_LEN) {
     return ESP_ERR_INVALID_ARG;
   }
+  if (serial_router_is_paused()) {
+    return ESP_ERR_INVALID_STATE;
+  }
 
   serial_command_t command = {
       .uart_idx = uart_idx,
@@ -126,12 +134,75 @@ esp_err_t serial_router_submit_command(uint8_t uart_idx, const uint8_t *data,
   return ESP_OK;
 }
 
+esp_err_t serial_router_set_paused(bool paused) {
+  if (s_router_task == NULL) {
+    return ESP_ERR_INVALID_STATE;
+  }
+
+  taskENTER_CRITICAL(&s_pause_lock);
+  s_pause_requested = paused;
+  taskEXIT_CRITICAL(&s_pause_lock);
+
+  for (unsigned attempt = 0U; attempt < 100U; ++attempt) {
+    taskENTER_CRITICAL(&s_pause_lock);
+    const bool applied = s_pause_applied == paused;
+    taskEXIT_CRITICAL(&s_pause_lock);
+    if (applied) {
+      return ESP_OK;
+    }
+    vTaskDelay(pdMS_TO_TICKS(10U));
+  }
+  return ESP_ERR_TIMEOUT;
+}
+
+bool serial_router_is_paused(void) {
+  taskENTER_CRITICAL(&s_pause_lock);
+  const bool paused = s_pause_requested;
+  taskEXIT_CRITICAL(&s_pause_lock);
+  return paused;
+}
+
 static void serial_router_task(void *arg) {
   ch9434_spi2_init();
   ch9434_init_uarts();
   s_next_rfid_poll_tick = xTaskGetTickCount();
 
   while (true) {
+    taskENTER_CRITICAL(&s_pause_lock);
+    const bool pause_requested = s_pause_requested;
+    const bool pause_applied = s_pause_applied;
+    taskEXIT_CRITICAL(&s_pause_lock);
+
+    if (pause_requested) {
+      if (!pause_applied) {
+        xQueueReset(s_command_queue);
+        memset(&s_weight_frame, 0, sizeof(s_weight_frame));
+        memset(&s_rfid_frame, 0, sizeof(s_rfid_frame));
+        discard_ch9434_input();
+        for (uint8_t uart_idx = 0U; uart_idx < APP_CH9434_UART_COUNT;
+             ++uart_idx) {
+          board_rs485_set_direction(uart_idx, BOARD_RS485_RX);
+        }
+        taskENTER_CRITICAL(&s_pause_lock);
+        s_pause_applied = true;
+        taskEXIT_CRITICAL(&s_pause_lock);
+        ESP_LOGI(TAG, "RFID/CH9434 service paused for OTA");
+      }
+      vTaskDelay(pdMS_TO_TICKS(APP_CH9434_POLL_INTERVAL_MS));
+      continue;
+    }
+
+    if (pause_applied) {
+      discard_ch9434_input();
+      memset(&s_weight_frame, 0, sizeof(s_weight_frame));
+      memset(&s_rfid_frame, 0, sizeof(s_rfid_frame));
+      s_next_rfid_poll_tick = xTaskGetTickCount();
+      taskENTER_CRITICAL(&s_pause_lock);
+      s_pause_applied = false;
+      taskEXIT_CRITICAL(&s_pause_lock);
+      ESP_LOGI(TAG, "RFID/CH9434 service resumed after OTA");
+    }
+
     if (process_pending_commands()) {
       s_next_rfid_poll_tick =
           xTaskGetTickCount() + pdMS_TO_TICKS(APP_RFID_POLL_INTERVAL_MS);
@@ -144,6 +215,24 @@ static void serial_router_task(void *arg) {
     }
 
     vTaskDelay(pdMS_TO_TICKS(APP_CH9434_POLL_INTERVAL_MS));
+  }
+}
+
+static void discard_ch9434_input(void) {
+  uint8_t discarded[APP_CH9434_RX_BUFFER_LEN];
+  for (uint8_t uart_idx = 0U; uart_idx < APP_CH9434_UART_COUNT; ++uart_idx) {
+    uint16_t pending = CH9434UARTxGetRxFIFOLen(uart_idx);
+    for (unsigned chunk = 0U; pending > 0U && chunk < 8U; ++chunk) {
+      const uint16_t read_len = pending > sizeof(discarded)
+                                    ? (uint16_t)sizeof(discarded)
+                                    : pending;
+      CH9434UARTxGetRxFIFOData(uart_idx, discarded, read_len);
+      pending = CH9434UARTxGetRxFIFOLen(uart_idx);
+    }
+    if (pending > 0U) {
+      ESP_LOGD(TAG, "uart%u still has %u bytes while entering maintenance",
+               uart_idx, (unsigned)pending);
+    }
   }
 }
 

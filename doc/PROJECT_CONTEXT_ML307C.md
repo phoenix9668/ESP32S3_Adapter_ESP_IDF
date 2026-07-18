@@ -175,6 +175,10 @@ From `GNSS用户手册_4G系列.pdf`:
   `AT+MGNSSCFG="nmea/mask",0` and `AT+MGNSSLOC=0`. The NMEA mask is NV-backed,
   so it is queried before writing. Disabling unsolicited output prevents NMEA
   sentences from interleaving with ML307 HTTP HEX frames on the shared AT UART.
+- An accepted OTA task enters an exclusive maintenance mode: the GNSS engine
+  is stopped with `AT+MGNSS=0`, RFID/CH9434 processing and normal telemetry are
+  paused across download retries, and all are restored only after the task is
+  gone. Existing RFID FIFO records remain persistent and are uploaded later.
 
 ## Old QuecPython Lessons To Preserve
 

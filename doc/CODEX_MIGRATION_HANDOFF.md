@@ -110,6 +110,10 @@ state machine and an ESP-IDF owned OneNET upload flow.
   reply ID with `code=200`.
 - `main/gnss_ml307c.c` parses `+MGNSSLOC`, including empty fields and signed
   NMEA degree-minute coordinates. Only the latest generation is retained.
+- Accepted OTA tasks run in an exclusive maintenance mode. GNSS is stopped,
+  RFID/CH9434 polling and serial commands are paused, and ordinary property
+  uploads stay suspended across download retries. Persistent RFID records are
+  retained and normal services resume only after the OTA task is gone.
 - `main/app_protocol_stream.c` keeps the existing E34 frame format while
   handling fragmented, concatenated, noise-prefixed, and CRC-damaged streams.
 - Host tests cover the protocol parsers, OneNET token vector, reply matching,

@@ -13,8 +13,10 @@ class OneNetOtaService {
 public:
   OneNetOtaService(AtModem *modem, Mqtt *mqtt,
                    const onenet_config_t &config);
+  ~OneNetOtaService();
 
   const std::string &inform_topic() const { return inform_topic_; }
+  bool maintenance_active() const { return maintenance_active_; }
   bool HandleMqttMessage(const std::string &topic,
                          const std::string &payload);
   void OnOnline();
@@ -32,7 +34,9 @@ private:
   bool version_reported_ = false;
   uint64_t next_check_epoch_ = 0U;
   uint8_t retry_attempt_ = 0U;
+  bool maintenance_active_ = false;
 
+  bool SetMaintenance(bool enabled);
   bool PublishInformReply();
   bool ReportVersion();
   bool ReportPendingResult();

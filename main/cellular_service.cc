@@ -18,6 +18,7 @@
 #include "onenet_reply.h"
 #include "onenet_time.h"
 #include "rfid_store.h"
+#include "serial_router.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -67,6 +68,7 @@ bool s_gnss_auto_report_seen;
 uint8_t s_gnss_auto_report;
 bool s_clock_seen;
 uint64_t s_clock_epoch;
+bool s_ota_maintenance;
 char s_inflight_id[16] = {};
 int s_reply_code = -1;
 uint32_t s_request_id;
@@ -552,39 +554,57 @@ bool suppress_unsolicited_gnss_reports(
   return true;
 }
 
+bool query_gnss_state(const std::shared_ptr<AtUart> &uart, uint8_t *state) {
+  taskENTER_CRITICAL(&s_gnss_lock);
+  s_gnss_state_seen = false;
+  taskEXIT_CRITICAL(&s_gnss_lock);
+  if (!uart->SendCommand("AT+MGNSS?", 3000)) {
+    return false;
+  }
+  taskENTER_CRITICAL(&s_gnss_lock);
+  const bool seen = s_gnss_state_seen;
+  if (seen) {
+    *state = s_gnss_state;
+  }
+  taskEXIT_CRITICAL(&s_gnss_lock);
+  return seen;
+}
+
+bool set_gnss_engine_enabled(const std::shared_ptr<AtUart> &uart,
+                             bool enabled) {
+  const uint8_t expected = enabled ? 1U : 0U;
+  uint8_t state = 0xFFU;
+  if (query_gnss_state(uart, &state) && state == expected) {
+    return true;
+  }
+
+  const char *command = enabled ? "AT+MGNSS=1" : "AT+MGNSS=0";
+  if (uart->SendCommand(command, 5000) &&
+      query_gnss_state(uart, &state) && state == expected) {
+    return true;
+  }
+  if (query_gnss_state(uart, &state) && state == expected) {
+    ESP_LOGW(TAG, "GNSS state command returned an error but state=%u",
+             state);
+    return true;
+  }
+  ESP_LOGW(TAG, "failed to set GNSS engine state=%u, final state=%u",
+           expected, state);
+  return false;
+}
+
 bool configure_gnss() {
   const auto uart = s_modem->GetAtUart();
   if (!suppress_unsolicited_gnss_reports(uart)) {
     return false;
   }
-
-  const auto query_state = [&uart](uint8_t *state) {
-    taskENTER_CRITICAL(&s_gnss_lock);
-    s_gnss_state_seen = false;
-    taskEXIT_CRITICAL(&s_gnss_lock);
-    if (!uart->SendCommand("AT+MGNSS?", 3000)) {
-      return false;
-    }
-    taskENTER_CRITICAL(&s_gnss_lock);
-    const bool seen = s_gnss_state_seen;
-    if (seen) {
-      *state = s_gnss_state;
-    }
-    taskEXIT_CRITICAL(&s_gnss_lock);
-    return seen;
-  };
-
   uint8_t state = 0U;
-  if (query_state(&state) && state == 1U) {
+  if (query_gnss_state(uart, &state) && state == 1U) {
     ESP_LOGI(TAG, "continuous GNSS already enabled");
     return true;
   }
-  if (uart->SendCommand("AT+MGNSS=1", 5000)) {
+  if (set_gnss_engine_enabled(uart, true)) {
     ESP_LOGI(TAG, "continuous GNSS enabled");
-    return true;
-  }
-  if (query_state(&state) && state == 1U) {
-    ESP_LOGW(TAG, "GNSS enable returned an error but state is already continuous");
     return true;
   }
   ESP_LOGW(TAG, "failed to enable continuous GNSS, final state=%u", state);
@@ -687,6 +707,7 @@ void online_loop(const char *post_topic) {
   uint32_t delivered_gnss_generation = 0U;
   bool firmware_version_delivered = false;
   bool prefer_gnss = true;
+  bool ota_maintenance_seen = false;
 
   while (true) {
     const TickType_t now = xTaskGetTickCount();
@@ -694,6 +715,22 @@ void online_loop(const char *post_topic) {
       s_ota->Service();
       next_ota_service = xTaskGetTickCount() +
                          pdMS_TO_TICKS(kOtaServiceIntervalMs);
+    }
+    if (s_ota && s_ota->maintenance_active()) {
+      ota_maintenance_seen = true;
+      if ((xEventGroupGetBits(s_events) & kDisconnectedEvent) != 0U) {
+        break;
+      }
+      vTaskDelay(pdMS_TO_TICKS(kIdleDelayMs));
+      continue;
+    }
+    if (ota_maintenance_seen) {
+      gnss_fix_t stale_fix = {};
+      cellular_service_get_latest_gnss(&stale_fix);
+      delivered_gnss_generation = stale_fix.generation;
+      next_gnss_poll = xTaskGetTickCount();
+      ota_maintenance_seen = false;
+      ESP_LOGI(TAG, "normal telemetry resumed after OTA maintenance");
     }
     if ((int32_t)(now - next_gnss_poll) >= 0) {
       if (!s_modem->GetAtUart()->SendCommand("AT+MGNSSLOC", 5000)) {
@@ -933,6 +970,7 @@ extern "C" esp_err_t cellular_service_start(void) {
   s_gnss_auto_report = 0U;
   s_clock_seen = false;
   s_clock_epoch = 0U;
+  s_ota_maintenance = false;
   s_request_id = esp_random();
   if (s_request_id == 0U) {
     s_request_id = 1U;
@@ -977,4 +1015,52 @@ extern "C" bool cellular_service_get_latest_gnss(gnss_fix_t *fix) {
   *fix = s_latest_gnss;
   taskEXIT_CRITICAL(&s_gnss_lock);
   return fix->generation != 0U;
+}
+
+extern "C" bool cellular_service_set_ota_maintenance(bool enabled) {
+  taskENTER_CRITICAL(&s_status_lock);
+  const bool unchanged = s_ota_maintenance == enabled;
+  taskEXIT_CRITICAL(&s_status_lock);
+  if (unchanged) {
+    return true;
+  }
+
+  if (enabled) {
+    const esp_err_t pause_ret = serial_router_set_paused(true);
+    if (pause_ret != ESP_OK) {
+      ESP_LOGE(TAG, "failed to pause RFID/CH9434 for OTA: %s",
+               esp_err_to_name(pause_ret));
+      return false;
+    }
+    if (!s_modem ||
+        !set_gnss_engine_enabled(s_modem->GetAtUart(), false)) {
+      ESP_LOGE(TAG, "failed to stop GNSS engine for OTA");
+      serial_router_set_paused(false);
+      return false;
+    }
+    taskENTER_CRITICAL(&s_status_lock);
+    s_ota_maintenance = true;
+    taskEXIT_CRITICAL(&s_status_lock);
+    ESP_LOGI(TAG,
+             "OTA maintenance active: RFID/CH9434 and GNSS engine stopped");
+    return true;
+  }
+
+  bool gnss_ready = true;
+  if (s_modem) {
+    gnss_ready = configure_gnss();
+  }
+  const esp_err_t resume_ret = serial_router_set_paused(false);
+  taskENTER_CRITICAL(&s_status_lock);
+  s_ota_maintenance = false;
+  taskEXIT_CRITICAL(&s_status_lock);
+  if (!gnss_ready) {
+    ESP_LOGW(TAG, "GNSS engine did not resume cleanly after OTA");
+  }
+  if (resume_ret != ESP_OK) {
+    ESP_LOGW(TAG, "RFID/CH9434 did not resume cleanly after OTA: %s",
+             esp_err_to_name(resume_ret));
+  }
+  ESP_LOGI(TAG, "OTA maintenance cleared; normal services resumed");
+  return gnss_ready && resume_ret == ESP_OK;
 }

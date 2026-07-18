@@ -35,6 +35,7 @@ esp_err_t cellular_service_start(void);
 bool cellular_service_config_ready(void);
 bool cellular_service_get_status(cellular_status_t *status);
 bool cellular_service_get_latest_gnss(gnss_fix_t *fix);
+bool cellular_service_set_ota_maintenance(bool enabled);
 
 #ifdef __cplusplus
 }

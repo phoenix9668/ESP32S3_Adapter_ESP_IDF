@@ -679,6 +679,33 @@ OneNetOtaService::OneNetOtaService(AtModem *modem, Mqtt *mqtt,
   inform_topic_ = "$sys/" + std::string(config_.product_id) + "/" +
                   config_.device_name + "/ota/inform";
   inform_reply_topic_ = inform_topic_ + "_reply";
+  PersistedState persisted;
+  if (load_persisted_state(&persisted) == ESP_OK &&
+      persisted.state == kPersistDownloading) {
+    if (SetMaintenance(true)) {
+      ESP_LOGI(TAG, "restored OTA maintenance for task=%s at offset=%lu",
+               persisted.task.task_id, (unsigned long)persisted.offset);
+    } else {
+      ESP_LOGW(TAG, "failed to restore OTA maintenance after reboot");
+    }
+  }
+}
+
+OneNetOtaService::~OneNetOtaService() {
+  if (maintenance_active_) {
+    SetMaintenance(false);
+  }
+}
+
+bool OneNetOtaService::SetMaintenance(bool enabled) {
+  if (maintenance_active_ == enabled) {
+    return true;
+  }
+  const bool ok = cellular_service_set_ota_maintenance(enabled);
+  if (ok || !enabled) {
+    maintenance_active_ = enabled;
+  }
+  return ok;
 }
 
 bool OneNetOtaService::HandleMqttMessage(const std::string &topic,
@@ -804,12 +831,20 @@ bool OneNetOtaService::CheckAndApply() {
   if (!onenet_ota_parse_task(response.data(), response.size(),
                              esp_app_get_description()->version,
                              partition->size, &task)) {
+    if (maintenance_active_ && !SetMaintenance(false)) {
+      ESP_LOGW(TAG, "normal services only partially resumed after OTA");
+    }
     set_ota_status(OTA_STATE_IDLE, nullptr, 0U, 0);
     ESP_LOGI(TAG, "no executable OneNET SOTA task");
     return true;
   }
   ESP_LOGI(TAG, "OneNET SOTA task accepted: id=%s target=%s size=%lu",
            task.task_id, task.target_version, (unsigned long)task.size);
+  if (!SetMaintenance(true)) {
+    set_ota_status(OTA_STATE_FAILED, &task, 0U, ESP_ERR_INVALID_STATE);
+    ESP_LOGW(TAG, "OTA deferred because maintenance mode could not start");
+    return false;
+  }
   return download_task(modem_, config_, task);
 }
 
