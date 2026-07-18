@@ -14,11 +14,19 @@ enum class AtMhttpFrameResult {
     Malformed,
 };
 
+struct AtMhttpFrameError {
+    size_t encoded_received = 0U;
+    size_t encoded_expected = 0U;
+    size_t invalid_offset = 0U;
+    unsigned char invalid_byte = 0U;
+};
+
 // ML307 may insert CRLF between the +MHTTPURC content metadata and its HEX
 // payload, and does not provide a reliable line suffix after the payload.
 // Extract one complete content frame based on <cur_len> instead of CRLF.
 AtMhttpFrameResult at_extract_mhttp_content_frame(const std::string &buffer,
                                                   std::string &values,
-                                                  size_t &consumed);
+                                                  size_t &consumed,
+                                                  AtMhttpFrameError *error = nullptr);
 
 #endif

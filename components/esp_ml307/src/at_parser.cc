@@ -18,15 +18,28 @@ size_t at_find_unquoted_comma(const std::string &values, size_t start) {
 
 AtMhttpFrameResult at_extract_mhttp_content_frame(const std::string &buffer,
                                                   std::string &values,
-                                                  size_t &consumed) {
+                                                  size_t &consumed,
+                                                  AtMhttpFrameError *error) {
     static const std::string prefix = "+MHTTPURC: ";
     static const std::string content_type = "\"content\"";
     values.clear();
     consumed = 0U;
+    if (error != nullptr) {
+        *error = AtMhttpFrameError{};
+    }
 
-    const auto malformed = [&](size_t search_start) {
+    const auto malformed = [&](size_t search_start, size_t invalid_offset,
+                               unsigned char invalid_byte,
+                               size_t encoded_received,
+                               size_t encoded_expected) {
         const size_t next_frame = buffer.find(prefix, search_start);
         consumed = next_frame == std::string::npos ? buffer.size() : next_frame;
+        if (error != nullptr) {
+            error->encoded_received = encoded_received;
+            error->encoded_expected = encoded_expected;
+            error->invalid_offset = invalid_offset;
+            error->invalid_byte = invalid_byte;
+        }
         values.clear();
         return AtMhttpFrameResult::Malformed;
     };
@@ -58,7 +71,7 @@ AtMhttpFrameResult at_extract_mhttp_content_frame(const std::string &buffer,
     const std::string current_length_text =
         buffer.substr(previous_comma + 1U, comma - previous_comma - 1U);
     if (current_length_text.empty()) {
-        return malformed(comma + 1U);
+        return malformed(comma + 1U, previous_comma + 1U, 0U, 0U, 0U);
     }
     char *end = nullptr;
     errno = 0;
@@ -67,7 +80,7 @@ AtMhttpFrameResult at_extract_mhttp_content_frame(const std::string &buffer,
     if (errno != 0 || end != current_length_text.c_str() +
                                 current_length_text.size() ||
         current_length > (SIZE_MAX / 2U)) {
-        return malformed(comma + 1U);
+        return malformed(comma + 1U, previous_comma + 1U, 0U, 0U, 0U);
     }
 
     const size_t encoded_length = static_cast<size_t>(current_length) * 2U;
@@ -96,23 +109,23 @@ AtMhttpFrameResult at_extract_mhttp_content_frame(const std::string &buffer,
             ++cursor;
             continue;
         }
-        if (ch == '\r') {
-            if (cursor + 1U >= buffer.size()) {
-                values.clear();
-                return AtMhttpFrameResult::NeedMore;
-            }
-            if (buffer[cursor + 1U] == '\n') {
-                cursor += 2U;
-                continue;
-            }
+        // ML307 normally wraps with CRLF, but long sustained transfers have
+        // also produced a lone CR or LF at a 510-byte transport boundary.
+        // Neither can represent a HEX nibble, so accepting them independently
+        // is unambiguous and still leaves the image MD5 as the final guard.
+        if (ch == '\r' || ch == '\n') {
+            ++cursor;
+            continue;
         }
-        return malformed(cursor + 1U);
+        // Search from the invalid byte itself. If it is the '+' beginning the
+        // next URC, searching at cursor + 1 would skip the only resync point.
+        return malformed(cursor, cursor, ch, encoded, encoded_length);
     }
 
     consumed = cursor;
-    if (buffer.size() >= consumed + 2U && buffer[consumed] == '\r' &&
-        buffer[consumed + 1U] == '\n') {
-        consumed += 2U;
+    while (consumed < buffer.size() &&
+           (buffer[consumed] == '\r' || buffer[consumed] == '\n')) {
+        ++consumed;
     }
     return AtMhttpFrameResult::Complete;
 }

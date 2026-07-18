@@ -12,5 +12,7 @@ bounds checking, explicitly selecting MQTT 3.1.1 before connecting, and
 refusing to report the data network ready until an IP address is present.
 The ML307C HTTPS path also uses a larger DMA receive-task stack, frames
 `MHTTPURC content` by its declared HEX payload length while ignoring CRLF line
-wrapping both before and inside the HEX body, and reports truncated/overflowed
-HTTP streams to the caller so OTA can resume from its last durable checkpoint.
+wrapping both before and inside the HEX body (including an isolated CR or LF at
+a transport boundary), preserves the next URC as a resynchronization point, and
+reports truncated/overflowed HTTP streams to the caller so OTA can resume from
+its last durable checkpoint.

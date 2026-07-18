@@ -31,7 +31,7 @@ constexpr const char *kExpectedProjectName = "ESP32S3_Adapter_ESP_IDF";
 constexpr uint32_t kOtaPollSeconds = 6U * 60U * 60U;
 constexpr uint32_t kHttpTimeoutMs = 30000U;
 constexpr size_t kHttpRangeSize = 256U * 1024U;
-constexpr size_t kCheckpointSize = 64U * 1024U;
+constexpr size_t kCheckpointSize = 16U * 1024U;
 constexpr size_t kFlashWriteSize = 4096U;
 constexpr uint32_t kBootValidationDelayMs = 60U * 1000U;
 constexpr unsigned kMaxIntegrityRestarts = 1U;
@@ -160,6 +160,20 @@ esp_err_t save_persisted_state(const PersistedState &state) {
       nvs_erase_key(handle, "result");
     }
   }
+  if (ret == ESP_OK) {
+    ret = nvs_commit(handle);
+  }
+  nvs_close(handle);
+  return ret;
+}
+
+esp_err_t save_persisted_offset(uint32_t offset) {
+  nvs_handle_t handle;
+  esp_err_t ret = nvs_open(kOtaNamespace, NVS_READWRITE, &handle);
+  if (ret != ESP_OK) {
+    return ret;
+  }
+  ret = nvs_set_u32(handle, "offset", offset);
   if (ret == ESP_OK) {
     ret = nvs_commit(handle);
   }
@@ -520,7 +534,7 @@ bool download_task(AtModem *modem, const onenet_config_t &config,
         set_ota_status(OTA_STATE_DOWNLOADING, &task, downloaded, 0);
         while (next_checkpoint <= downloaded && next_checkpoint < task.size) {
           persisted.offset = next_checkpoint;
-          if (save_persisted_state(persisted) != ESP_OK) {
+          if (save_persisted_offset(persisted.offset) != ESP_OK) {
             http->Close();
             esp_ota_abort(handle);
             return false;

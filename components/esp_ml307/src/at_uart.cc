@@ -361,15 +361,23 @@ bool AtUart::ParseResponse() {
         // body afterwards. Frame it using <cur_len>, otherwise the metadata
         // line is consumed with an empty payload and the body is discarded.
         size_t consumed = 0U;
+        AtMhttpFrameError mhttp_error;
         const AtMhttpFrameResult mhttp_result =
-            at_extract_mhttp_content_frame(rx_buffer_, values, consumed);
+            at_extract_mhttp_content_frame(rx_buffer_, values, consumed,
+                                           &mhttp_error);
         if (mhttp_result == AtMhttpFrameResult::NeedMore) {
             return false;
         }
         if (mhttp_result == AtMhttpFrameResult::Malformed) {
-            ESP_LOGE(TAG, "Malformed MHTTPURC content frame: discard=%u buffered=%u",
+            ESP_LOGE(TAG,
+                     "Malformed MHTTPURC content frame: discard=%u buffered=%u "
+                     "hex=%u/%u bad=0x%02x at=%u",
                      static_cast<unsigned>(consumed),
-                     static_cast<unsigned>(rx_buffer_.size()));
+                     static_cast<unsigned>(rx_buffer_.size()),
+                     static_cast<unsigned>(mhttp_error.encoded_received),
+                     static_cast<unsigned>(mhttp_error.encoded_expected),
+                     static_cast<unsigned>(mhttp_error.invalid_byte),
+                     static_cast<unsigned>(mhttp_error.invalid_offset));
             rx_buffer_.erase(0, consumed == 0U ? rx_buffer_.size() : consumed);
             // Make the active HTTP stream fail immediately. Silently dropping
             // one content URC causes misleading gaps in every following URC.

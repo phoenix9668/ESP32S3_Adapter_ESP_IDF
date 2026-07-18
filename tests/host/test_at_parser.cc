@@ -49,6 +49,14 @@ int main() {
     assert(at_extract_mhttp_content_frame(partial_wrapped, values, consumed) ==
            AtMhttpFrameResult::NeedMore);
 
+    const std::string lone_separators =
+        "+MHTTPURC: \"content\",0,724992,1460,6,\r"
+        "E901\n02AF\ra055\n";
+    assert(at_extract_mhttp_content_frame(lone_separators, values, consumed) ==
+           AtMhttpFrameResult::Complete);
+    assert(values == "\"content\",0,724992,1460,6,E90102AFa055");
+    assert(consumed == lone_separators.size());
+
     const std::string malformed_then_valid =
         "+MHTTPURC: \"content\",0,724992,1085,4,E901ZZZZ"
         "+MHTTPURC: \"content\",0,724992,1089,4,0011AAFF";
@@ -56,6 +64,19 @@ int main() {
                                           consumed) ==
            AtMhttpFrameResult::Malformed);
     assert(consumed == malformed_then_valid.find("+MHTTPURC", 1U));
+
+    AtMhttpFrameError error;
+    const std::string truncated_then_valid =
+        "+MHTTPURC: \"content\",0,724992,1085,4,E901"
+        "+MHTTPURC: \"content\",0,724992,1089,4,0011AAFF";
+    assert(at_extract_mhttp_content_frame(truncated_then_valid, values,
+                                          consumed, &error) ==
+           AtMhttpFrameResult::Malformed);
+    assert(consumed == truncated_then_valid.find("+MHTTPURC", 1U));
+    assert(error.encoded_received == 4U);
+    assert(error.encoded_expected == 8U);
+    assert(error.invalid_byte == static_cast<unsigned char>('+'));
+    assert(error.invalid_offset == consumed);
     assert(at_extract_mhttp_content_frame("+CPIN: READY\r\n", values,
                                           consumed) ==
            AtMhttpFrameResult::NotContent);
