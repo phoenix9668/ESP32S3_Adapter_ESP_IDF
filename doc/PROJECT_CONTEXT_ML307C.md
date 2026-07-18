@@ -171,6 +171,10 @@ From `GNSS用户手册_4G系列.pdf`:
 - `+MGNSSLOC` fields:
   `UTC,latitude,longtitude,hdop,altitude,fix,cog,spkm,spkn,date,nsat,dtype`.
 - ML307C GNSS is disabled by default and must be enabled by AT command.
+- This firmware keeps `AT+MGNSS=1` for continuous positioning but enforces
+  `AT+MGNSSCFG="nmea/mask",0` and `AT+MGNSSLOC=0`. The NMEA mask is NV-backed,
+  so it is queried before writing. Disabling unsolicited output prevents NMEA
+  sentences from interleaving with ML307 HTTP HEX frames on the shared AT UART.
 
 ## Old QuecPython Lessons To Preserve
 

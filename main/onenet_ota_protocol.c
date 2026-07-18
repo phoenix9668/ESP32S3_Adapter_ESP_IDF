@@ -103,7 +103,7 @@ uint32_t onenet_ota_resume_offset(uint32_t persisted_offset,
 }
 
 uint32_t onenet_ota_retry_delay_seconds(uint8_t attempt) {
-  static const uint32_t delays[] = {5U, 15U, 30U, 60U, 300U};
+  static const uint32_t delays[] = {2U, 5U, 15U, 30U, 60U};
   const size_t count = sizeof(delays) / sizeof(delays[0]);
   const size_t index = attempt < count ? attempt : count - 1U;
   return delays[index];

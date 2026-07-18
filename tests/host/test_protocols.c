@@ -230,10 +230,10 @@ static void test_onenet_ota_protocol(void) {
                                            659456U));
   assert(onenet_ota_resume_offset(588364U, 659456U, 4096U) == 585728U);
   assert(onenet_ota_resume_offset(659456U, 659456U, 4096U) == 0U);
-  assert(onenet_ota_retry_delay_seconds(0U) == 5U);
-  assert(onenet_ota_retry_delay_seconds(1U) == 15U);
-  assert(onenet_ota_retry_delay_seconds(4U) == 300U);
-  assert(onenet_ota_retry_delay_seconds(20U) == 300U);
+  assert(onenet_ota_retry_delay_seconds(0U) == 2U);
+  assert(onenet_ota_retry_delay_seconds(1U) == 5U);
+  assert(onenet_ota_retry_delay_seconds(4U) == 60U);
+  assert(onenet_ota_retry_delay_seconds(20U) == 60U);
 
   char id[16];
   const char inform[] =

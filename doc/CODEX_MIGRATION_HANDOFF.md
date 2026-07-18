@@ -92,7 +92,9 @@ state machine and an ESP-IDF owned OneNET upload flow.
 - `RESET` low at least 300 ms resets the module.
 - `NETLIGHT` can indicate registration, but the firmware should still maintain
   its own AT/network/cloud state.
-- GNSS commands include `AT+MGNSS=1`, `AT+MGNSSLOC=1`, and `AT+MGNSSLOC`.
+- GNSS stays in continuous mode with `AT+MGNSS=1`; unsolicited output is kept
+  off with `AT+MGNSSCFG="nmea/mask",0` and `AT+MGNSSLOC=0`, and the current fix
+  is queried every 120 seconds with `AT+MGNSSLOC`.
 
 ## Implemented Firmware Shape
 

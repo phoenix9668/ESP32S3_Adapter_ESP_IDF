@@ -61,6 +61,10 @@ cellular_status_t s_status = {};
 gnss_fix_t s_latest_gnss = {};
 bool s_gnss_state_seen;
 uint8_t s_gnss_state;
+bool s_gnss_nmea_mask_seen;
+uint8_t s_gnss_nmea_mask;
+bool s_gnss_auto_report_seen;
+uint8_t s_gnss_auto_report;
 bool s_clock_seen;
 uint64_t s_clock_epoch;
 char s_inflight_id[16] = {};
@@ -247,6 +251,26 @@ void handle_gnss_urc(const std::string &command,
       s_clock_seen = true;
       taskEXIT_CRITICAL(&s_gnss_lock);
     }
+    return;
+  }
+  if (command == "MGNSSCFG" && arguments.size() >= 2U &&
+      arguments[0].type == AtArgumentValue::Type::String &&
+      arguments[0].string_value == "nmea/mask" &&
+      arguments[1].type == AtArgumentValue::Type::Int &&
+      arguments[1].int_value >= 0 && arguments[1].int_value <= 63) {
+    taskENTER_CRITICAL(&s_gnss_lock);
+    s_gnss_nmea_mask = static_cast<uint8_t>(arguments[1].int_value);
+    s_gnss_nmea_mask_seen = true;
+    taskEXIT_CRITICAL(&s_gnss_lock);
+    return;
+  }
+  if (command == "MGNSSLOC" && arguments.size() == 1U &&
+      arguments[0].type == AtArgumentValue::Type::Int &&
+      arguments[0].int_value >= 0 && arguments[0].int_value <= 1) {
+    taskENTER_CRITICAL(&s_gnss_lock);
+    s_gnss_auto_report = static_cast<uint8_t>(arguments[0].int_value);
+    s_gnss_auto_report_seen = true;
+    taskEXIT_CRITICAL(&s_gnss_lock);
     return;
   }
   int state = -1;
@@ -474,10 +498,63 @@ bool upload_firmware_version(const char *post_topic) {
          publish_confirmed(request_id, payload, post_topic);
 }
 
+bool suppress_unsolicited_gnss_reports(
+    const std::shared_ptr<AtUart> &uart) {
+  const auto query_nmea_mask = [&uart](uint8_t *mask) {
+    taskENTER_CRITICAL(&s_gnss_lock);
+    s_gnss_nmea_mask_seen = false;
+    taskEXIT_CRITICAL(&s_gnss_lock);
+    if (!uart->SendCommand("AT+MGNSSCFG=\"nmea/mask\"", 3000)) {
+      return false;
+    }
+    taskENTER_CRITICAL(&s_gnss_lock);
+    const bool seen = s_gnss_nmea_mask_seen;
+    if (seen) {
+      *mask = s_gnss_nmea_mask;
+    }
+    taskEXIT_CRITICAL(&s_gnss_lock);
+    return seen;
+  };
+
+  uint8_t nmea_mask = 0xFFU;
+  if ((!query_nmea_mask(&nmea_mask) || nmea_mask != 0U) &&
+      (!uart->SendCommand("AT+MGNSSCFG=\"nmea/mask\",0", 3000) ||
+       !query_nmea_mask(&nmea_mask) || nmea_mask != 0U)) {
+    ESP_LOGW(TAG, "failed to disable unsolicited GNSS NMEA output");
+    return false;
+  }
+
+  const auto query_auto_report = [&uart](uint8_t *enabled) {
+    taskENTER_CRITICAL(&s_gnss_lock);
+    s_gnss_auto_report_seen = false;
+    taskEXIT_CRITICAL(&s_gnss_lock);
+    if (!uart->SendCommand("AT+MGNSSLOC?", 3000)) {
+      return false;
+    }
+    taskENTER_CRITICAL(&s_gnss_lock);
+    const bool seen = s_gnss_auto_report_seen;
+    if (seen) {
+      *enabled = s_gnss_auto_report;
+    }
+    taskEXIT_CRITICAL(&s_gnss_lock);
+    return seen;
+  };
+
+  uint8_t auto_report = 0xFFU;
+  if ((!query_auto_report(&auto_report) || auto_report != 0U) &&
+      (!uart->SendCommand("AT+MGNSSLOC=0", 3000) ||
+       !query_auto_report(&auto_report) || auto_report != 0U)) {
+    ESP_LOGW(TAG, "failed to disable automatic GNSS location reports");
+    return false;
+  }
+  ESP_LOGI(TAG,
+           "unsolicited GNSS NMEA/location reports disabled");
+  return true;
+}
+
 bool configure_gnss() {
   const auto uart = s_modem->GetAtUart();
-  if (!uart->SendCommand("AT+MGNSSLOC=0", 3000)) {
-    ESP_LOGW(TAG, "failed to disable automatic GNSS reports");
+  if (!suppress_unsolicited_gnss_reports(uart)) {
     return false;
   }
 
@@ -755,6 +832,13 @@ void cellular_task(void *) {
       ESP_LOGI(TAG,
                "FACTORY_STATUS {\"stage\":\"modem\",\"ready\":true}");
       s_modem->GetAtUart()->RegisterUrcCallback(handle_gnss_urc);
+      // Stop persistent NMEA output before verbose SIM diagnostics or any
+      // future HTTP transfer. This does not stop the GNSS engine; the normal
+      // post-attach configuration below keeps MGNSS=1 for hot continuous fix.
+      if (!suppress_unsolicited_gnss_reports(s_modem->GetAtUart())) {
+        ESP_LOGW(TAG,
+                 "early GNSS UART quiesce failed; retrying after attach");
+      }
       print_sim_diagnostics(s_modem->GetAtUart());
       set_status(CELLULAR_STATE_NETWORK_ATTACHING);
       const NetworkStatus network =
@@ -843,6 +927,10 @@ extern "C" esp_err_t cellular_service_start(void) {
   s_sim_snapshot_delivered = false;
   s_gnss_state_seen = false;
   s_gnss_state = 0U;
+  s_gnss_nmea_mask_seen = false;
+  s_gnss_nmea_mask = 0U;
+  s_gnss_auto_report_seen = false;
+  s_gnss_auto_report = 0U;
   s_clock_seen = false;
   s_clock_epoch = 0U;
   s_request_id = esp_random();
