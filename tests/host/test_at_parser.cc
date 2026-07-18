@@ -15,5 +15,29 @@ int main() {
     const size_t numeric = at_find_unquoted_comma(fields, empty + 1U);
     assert(fields.substr(empty + 1U, numeric - empty - 1U) == "42");
     assert(at_find_unquoted_comma(fields, numeric + 1U) == std::string::npos);
+
+    std::string values;
+    size_t consumed = 0U;
+    const std::string split_content =
+        "+MHTTPURC: \"content\",0,724992,1085,4,\r\nE90102AF\r\n";
+    assert(at_extract_mhttp_content_frame(split_content, values, consumed) ==
+           AtMhttpFrameResult::Complete);
+    assert(values == "\"content\",0,724992,1085,4,E90102AF");
+    assert(consumed == split_content.size());
+
+    const std::string inline_content =
+        "+MHTTPURC: \"content\",0,724992,1089,4,0011aAff";
+    assert(at_extract_mhttp_content_frame(inline_content, values, consumed) ==
+           AtMhttpFrameResult::Complete);
+    assert(values == "\"content\",0,724992,1089,4,0011aAff");
+    assert(consumed == inline_content.size());
+
+    const std::string partial =
+        "+MHTTPURC: \"content\",0,724992,1085,4,\r\nE901";
+    assert(at_extract_mhttp_content_frame(partial, values, consumed) ==
+           AtMhttpFrameResult::NeedMore);
+    assert(at_extract_mhttp_content_frame("+CPIN: READY\r\n", values,
+                                          consumed) ==
+           AtMhttpFrameResult::NotContent);
     return 0;
 }

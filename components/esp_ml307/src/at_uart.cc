@@ -183,19 +183,30 @@ void AtUart::Initialize() {
         gpio_isr_handler_add(ri_pin_, RiPinIsrHandler, this);
     }
 
-    // ReceiveTask: high priority, only handles DMA data reception
-    xTaskCreate([](void* arg) {
+    // std::string growth and C++ locks need more than the upstream 1 KiB.
+    // A real HTTPS response overflowed modem_receive at 1 KiB.
+    const BaseType_t receive_created = xTaskCreate([](void* arg) {
         auto at_uart = (AtUart*)arg;
         at_uart->ReceiveTask();
         vTaskDelete(NULL);
-    }, "modem_receive", 1024, this, configMAX_PRIORITIES - 2, &receive_task_handle_);
+    }, "modem_receive", 4096, this, configMAX_PRIORITIES - 2, &receive_task_handle_);
+    if (receive_created != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create modem_receive task");
+        return;
+    }
 
     // EventTask: lower priority, handles parsing and URC callbacks
-    xTaskCreate([](void* arg) {
+    const BaseType_t event_created = xTaskCreate([](void* arg) {
         auto at_uart = (AtUart*)arg;
         at_uart->EventTask();
         vTaskDelete(NULL);
     }, "modem_event", 2048 * 3, this, configMAX_PRIORITIES - 3, &event_task_handle_);
+    if (event_created != pdPASS) {
+        ESP_LOGE(TAG, "Failed to create modem_event task");
+        vTaskDelete(receive_task_handle_);
+        receive_task_handle_ = nullptr;
+        return;
+    }
 
     initialized_ = true;
 }
@@ -345,63 +356,95 @@ bool AtUart::ParseResponse() {
             return true;
         }
 
-        end_pos = rx_buffer_.find("\r\n");
-        if (end_pos == std::string::npos) {
-            // FIXME: for +MHTTPURC: "ind", missing newline
-            if (rx_buffer_.size() >= 16 && memcmp(rx_buffer_.c_str(), "+MHTTPURC: \"ind\"", 16) == 0) {
-                // Find the end of this line and add \r\n if missing
-                auto next_plus = rx_buffer_.find("+", 1);
-                if (next_plus != std::string::npos) {
-                    // Insert \r\n before the next + command
-                    rx_buffer_.insert(next_plus, "\r\n");
+        // MHTTPURC content has no reliable line terminator. Some ML307C
+        // firmware inserts CRLF after the metadata comma and sends the HEX
+        // body afterwards. Frame it using <cur_len>, otherwise the metadata
+        // line is consumed with an empty payload and the body is discarded.
+        size_t consumed = 0U;
+        const AtMhttpFrameResult mhttp_result =
+            at_extract_mhttp_content_frame(rx_buffer_, values, consumed);
+        if (mhttp_result == AtMhttpFrameResult::NeedMore) {
+            return false;
+        }
+        if (mhttp_result == AtMhttpFrameResult::Malformed) {
+            ESP_LOGE(TAG, "Malformed MHTTPURC content frame");
+            const size_t malformed_end = rx_buffer_.find("\r\n");
+            rx_buffer_.erase(0, malformed_end == std::string::npos
+                                    ? rx_buffer_.size()
+                                    : malformed_end + 2U);
+            return true;
+        }
+        if (mhttp_result == AtMhttpFrameResult::Complete) {
+            command = "MHTTPURC";
+            rx_buffer_.erase(0, consumed);
+        }
+
+        if (command.empty()) {
+            end_pos = rx_buffer_.find("\r\n");
+            if (end_pos == std::string::npos) {
+                // FIXME: for +MHTTPURC: "ind", missing newline
+                if (rx_buffer_.size() >= 16 &&
+                    memcmp(rx_buffer_.c_str(), "+MHTTPURC: \"ind\"", 16) == 0) {
+                    // Find the end of this line and add \r\n if missing
+                    auto next_plus = rx_buffer_.find("+", 1);
+                    if (next_plus != std::string::npos) {
+                        // Insert \r\n before the next + command
+                        rx_buffer_.insert(next_plus, "\r\n");
+                    } else {
+                        // Append \r\n at the end
+                        rx_buffer_.append("\r\n");
+                    }
+                    end_pos = rx_buffer_.find("\r\n");
                 } else {
-                    // Append \r\n at the end
-                    rx_buffer_.append("\r\n");
+                    return false;
                 }
-                end_pos = rx_buffer_.find("\r\n");
-            } else {
-                return false;
             }
-        }
 
-        // Ignore empty lines
-        if (end_pos == 0) {
-            rx_buffer_.erase(0, 2);
-            return true;
-        }
-
-        if (debug_) {
-            ESP_LOGI(TAG, "<< %.64s (%u bytes) [%02x%02x%02x]", rx_buffer_.substr(0, end_pos).c_str(), end_pos,
-                rx_buffer_[0], rx_buffer_[1], rx_buffer_[2]);
-        }
-
-        // Parse "+CME ERROR: 123,456,789"
-        if (rx_buffer_[0] == '+') {
-            auto pos = rx_buffer_.find(": ");
-            if (pos == std::string::npos || pos > end_pos) {
-                command = rx_buffer_.substr(1, end_pos - 1);
-            } else {
-                command = rx_buffer_.substr(1, pos - 1);
-                values = rx_buffer_.substr(pos + 2, end_pos - pos - 2);
+            // Ignore empty lines
+            if (end_pos == 0) {
+                rx_buffer_.erase(0, 2);
+                return true;
             }
-            rx_buffer_.erase(0, end_pos + 2);
-            // Will call HandleUrc after releasing lock
-        } else if (rx_buffer_.size() >= 4 && rx_buffer_[0] == 'O' && rx_buffer_[1] == 'K' && rx_buffer_[2] == '\r' && rx_buffer_[3] == '\n') {
-            rx_buffer_.erase(0, 4);
-            xEventGroupSetBits(event_group_handle_, AT_EVENT_COMMAND_DONE);
-            return true;
-        } else if (rx_buffer_.size() >= 7 && rx_buffer_[0] == 'E' && rx_buffer_[1] == 'R' && rx_buffer_[2] == 'R' && rx_buffer_[3] == 'O' && rx_buffer_[4] == 'R' && rx_buffer_[5] == '\r' && rx_buffer_[6] == '\n') {
-            rx_buffer_.erase(0, 7);
-            xEventGroupSetBits(event_group_handle_, AT_EVENT_COMMAND_ERROR);
-            return true;
-        } else if (rx_buffer_[0] == 0xE0) { // 4G wake up MCU, just ignore
-            rx_buffer_.erase(0, end_pos + 2);
-            return true;
-        } else {
-            std::lock_guard<std::mutex> response_lock(mutex_);
-            response_ = rx_buffer_.substr(0, end_pos);
-            rx_buffer_.erase(0, end_pos + 2);
-            return true;
+
+            if (debug_) {
+                ESP_LOGI(TAG, "<< %.64s (%u bytes) [%02x%02x%02x]",
+                         rx_buffer_.substr(0, end_pos).c_str(), end_pos,
+                         rx_buffer_[0], rx_buffer_[1], rx_buffer_[2]);
+            }
+
+            // Parse "+CME ERROR: 123,456,789"
+            if (rx_buffer_[0] == '+') {
+                auto pos = rx_buffer_.find(": ");
+                if (pos == std::string::npos || pos > end_pos) {
+                    command = rx_buffer_.substr(1, end_pos - 1);
+                } else {
+                    command = rx_buffer_.substr(1, pos - 1);
+                    values = rx_buffer_.substr(pos + 2, end_pos - pos - 2);
+                }
+                rx_buffer_.erase(0, end_pos + 2);
+                // Will call HandleUrc after releasing lock
+            } else if (rx_buffer_.size() >= 4 && rx_buffer_[0] == 'O' &&
+                       rx_buffer_[1] == 'K' && rx_buffer_[2] == '\r' &&
+                       rx_buffer_[3] == '\n') {
+                rx_buffer_.erase(0, 4);
+                xEventGroupSetBits(event_group_handle_, AT_EVENT_COMMAND_DONE);
+                return true;
+            } else if (rx_buffer_.size() >= 7 && rx_buffer_[0] == 'E' &&
+                       rx_buffer_[1] == 'R' && rx_buffer_[2] == 'R' &&
+                       rx_buffer_[3] == 'O' && rx_buffer_[4] == 'R' &&
+                       rx_buffer_[5] == '\r' && rx_buffer_[6] == '\n') {
+                rx_buffer_.erase(0, 7);
+                xEventGroupSetBits(event_group_handle_, AT_EVENT_COMMAND_ERROR);
+                return true;
+            } else if (rx_buffer_[0] == 0xE0) { // 4G wake up MCU, just ignore
+                rx_buffer_.erase(0, end_pos + 2);
+                return true;
+            } else {
+                std::lock_guard<std::mutex> response_lock(mutex_);
+                response_ = rx_buffer_.substr(0, end_pos);
+                rx_buffer_.erase(0, end_pos + 2);
+                return true;
+            }
         }
     }
 

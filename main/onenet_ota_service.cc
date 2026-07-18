@@ -58,6 +58,18 @@ enum class ImageIdentityResult {
   Invalid,
 };
 
+enum class StatusReportResult {
+  Accepted,
+  TransportError,
+  Rejected,
+};
+
+struct OtaApiResponse {
+  bool parsed = false;
+  int code = -1;
+  std::string message;
+};
+
 void set_ota_status(ota_state_t state, const onenet_ota_task_t *task,
                     uint32_t downloaded, int error) {
   taskENTER_CRITICAL(&s_ota_status_lock);
@@ -219,15 +231,28 @@ bool http_json(AtModem *modem, const onenet_config_t &config,
   return !response_body->empty();
 }
 
-bool response_code_ok(const std::string &body) {
+OtaApiResponse parse_api_response(const std::string &body) {
+  OtaApiResponse response;
   cJSON *root = cJSON_ParseWithLength(body.data(), body.size());
   if (root == nullptr) {
-    return false;
+    return response;
   }
   const cJSON *code = cJSON_GetObjectItemCaseSensitive(root, "code");
-  const bool ok = cJSON_IsNumber(code) && code->valueint == 0;
+  const cJSON *message = cJSON_GetObjectItemCaseSensitive(root, "msg");
+  if (cJSON_IsNumber(code)) {
+    response.parsed = true;
+    response.code = code->valueint;
+  }
+  if (cJSON_IsString(message) && message->valuestring != nullptr) {
+    response.message = message->valuestring;
+  }
   cJSON_Delete(root);
-  return ok;
+  return response;
+}
+
+bool response_code_ok(const std::string &body) {
+  const OtaApiResponse response = parse_api_response(body);
+  return response.parsed && response.code == 0;
 }
 
 bool task_is_active(AtModem *modem, const onenet_config_t &config,
@@ -248,8 +273,9 @@ bool task_is_active(AtModem *modem, const onenet_config_t &config,
   return active;
 }
 
-bool report_status(AtModem *modem, const onenet_config_t &config,
-                   const char *task_id, int step) {
+StatusReportResult report_status(AtModem *modem,
+                                 const onenet_config_t &config,
+                                 const char *task_id, int step) {
   char path[256];
   char payload[48];
   const int path_length =
@@ -259,18 +285,22 @@ bool report_status(AtModem *modem, const onenet_config_t &config,
       snprintf(payload, sizeof(payload), "{\"step\":%d}", step);
   if (path_length <= 0 || (size_t)path_length >= sizeof(path) ||
       payload_length <= 0 || (size_t)payload_length >= sizeof(payload)) {
-    return false;
+    return StatusReportResult::Rejected;
   }
   const std::string request(payload, (size_t)payload_length);
   std::string response;
-  const bool ok = http_json(modem, config, "POST", path, &request, &response) &&
-                  response_code_ok(response);
-  if (ok) {
-    ESP_LOGI(TAG, "OneNET OTA status accepted: step=%d", step);
-  } else {
-    ESP_LOGW(TAG, "OneNET OTA status rejected: step=%d", step);
+  if (!http_json(modem, config, "POST", path, &request, &response)) {
+    ESP_LOGW(TAG, "OneNET OTA status transport failed: step=%d", step);
+    return StatusReportResult::TransportError;
   }
-  return ok;
+  const OtaApiResponse api = parse_api_response(response);
+  if (api.parsed && api.code == 0) {
+    ESP_LOGI(TAG, "OneNET OTA status accepted: step=%d", step);
+    return StatusReportResult::Accepted;
+  }
+  ESP_LOGW(TAG, "OneNET OTA status rejected: step=%d code=%d msg=%.96s", step,
+           api.code, api.message.c_str());
+  return StatusReportResult::Rejected;
 }
 
 bool calculate_partition_md5(const esp_partition_t *partition, uint32_t size,
@@ -555,8 +585,6 @@ bool download_task(AtModem *modem, const onenet_config_t &config,
       report_status(modem, config, task.task_id, 206);
       return false;
     }
-    report_status(modem, config, task.task_id, 101);
-
     persisted.state = kPersistRebootPending;
     persisted.offset = task.size;
     ret = save_persisted_state(persisted);
@@ -721,9 +749,18 @@ bool OneNetOtaService::ReportPendingResult() {
       persisted.state != kPersistResultPending) {
     return true;
   }
-  if (!report_status(modem_, config_, persisted.task.task_id,
-                     persisted.result)) {
+  const StatusReportResult result =
+      report_status(modem_, config_, persisted.task.task_id, persisted.result);
+  if (result == StatusReportResult::TransportError) {
     return false;
+  }
+  if (result == StatusReportResult::Rejected) {
+    // A parsed OneNET rejection means the server received the request but the
+    // task is already complete/cancelled or no longer in a valid state. The
+    // official SDK guidance is to destroy this stale context, not retry it
+    // forever and block version reporting and future tasks.
+    ESP_LOGW(TAG, "clearing rejected terminal OTA result for task=%s",
+             persisted.task.task_id);
   }
   clear_persisted_state();
   set_ota_status(OTA_STATE_IDLE, nullptr, 0U, 0);
@@ -764,6 +801,14 @@ bool OneNetOtaService::CheckAndApply() {
 
 void OneNetOtaService::Service() {
   PublishInformReply();
+  PersistedState persisted;
+  if (load_persisted_state(&persisted) == ESP_OK &&
+      persisted.state == kPersistRebootPending) {
+    // Keep the task in OneNET's upgrading state until the local 60-second
+    // rollback trial succeeds. Reporting the new version here can complete
+    // the server task before step=201 and makes that result invalid.
+    return;
+  }
   if (!ReportPendingResult()) {
     return;
   }

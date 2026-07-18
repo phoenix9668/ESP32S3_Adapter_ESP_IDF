@@ -323,8 +323,12 @@ OneNET 要求上传文件名为 1–20 个英文字母、数字、点、连字�
   上报 `205`。任一失败都不会切换启动分区。
 - 新镜像启动后进入 rollback trial。NVS、RFID Store、主要任务和 `onenet`
   配置成功启动并稳定 60 秒后才标记有效；蜂窝网络是否在线不作为回滚条件。
-- 新版本随后联网时补报 `step=201`。若新固件崩溃或看门狗复位，bootloader
+- 新版本先完成本地 60 秒试运行，期间暂不上报新版本；标记有效后先补报
+  `step=201`，再上报新版本。`step=100` 已把平台任务切换到“升级中”，因此不再
+  重复上报会被平台拒绝的 `step=101`。若新固件崩溃或看门狗复位，bootloader
   自动回滚，旧版本恢复联网后补报失败。
+- OneNET 明确返回终态上报已完成、已取消或状态无效时，设备会清理该任务上下文；
+  网络/HTTP 传输失败才保留并重试，避免旧 `step=201` 阻塞版本上报和后续任务。
 - OTA 不修改 NVS 凭据、RFID Store、bootloader 或分区表。
 
 常用终态：`102` OTA 分区空间不足、`204` 镜像版本不一致、`205` MD5 校验失败、
@@ -337,17 +341,23 @@ OneNET 要求上传文件名为 1–20 个英文字母、数字、点、连字�
 先通过 USB 烧录包含本节修复的应用（保留 `onenet` 和 `rfid_store` 分区），再在
 OneNET 创建一个新任务 ID；新固件也会拒绝把 `offset == size` 当作有效断点。
 
-本工程可用下面的应用分区单独烧录方式恢复，不会改写 OneNET NVS、RFID Store、
-bootloader 或分区表。把端口替换成实际枚举出的 USB Serial/JTAG 设备：
+本工程提供专用恢复脚本，不会改写 OneNET NVS、RFID Store、bootloader 或分区
+表。脚本只擦除 8 KiB `otadata`、把签名应用写入 `ota_0`，再由 bootloader 从
+`ota_0` 启动。不能只运行普通 `idf.py app-flash`：设备当前可能正从 `ota_1`
+启动，单独写 `ota_0` 而不重置 boot selection 不一定会运行新镜像。
+
+先生成签名恢复镜像，再把端口替换成实际枚举出的 USB Serial/JTAG 设备：
 
 ```sh
-export IDF_TOOLS_PATH=/Users/gally/.espressif/tools
+tools/build_ota.sh 1.0.2
+tools/recover_ota_app.sh /dev/tty.usbmodemXXXX dist/s3-1.0.2.bin
+export IDF_TOOLS_PATH=/Users/gally/.espressif
 . /Users/gally/.espressif/v5.5.4/esp-idf/export.sh
-idf.py -p /dev/tty.usbmodemXXXX app-flash monitor
+idf.py -p /dev/tty.usbmodemXXXX monitor
 ```
 
 不要执行 `erase-flash`。恢复固件上线并重新上报当前版本后，应删除/停止旧的失败
-任务，使用版本更高的新 `.bin` 新建任务验证 OTA 修复。
+任务，使用版本更高的新 `.bin`（例如 1.0.3）新建任务验证 OTA 修复。
 
 如果两个应用槽都无法启动，使用 USB Serial/JTAG 进入下载模式，按“公共
 factory 固件 + 该 MAC 原身份专属 NVS”返修烧录；不要擦除或改写
