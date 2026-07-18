@@ -25,6 +25,14 @@ int main() {
     assert(values == "\"content\",0,724992,1085,4,E90102AF");
     assert(consumed == split_content.size());
 
+    const std::string wrapped_content =
+        "+MHTTPURC: \"content\",0,724992,1460,6,\r\n"
+        "E901\r\n02AF\r\na055\r\n";
+    assert(at_extract_mhttp_content_frame(wrapped_content, values, consumed) ==
+           AtMhttpFrameResult::Complete);
+    assert(values == "\"content\",0,724992,1460,6,E90102AFa055");
+    assert(consumed == wrapped_content.size());
+
     const std::string inline_content =
         "+MHTTPURC: \"content\",0,724992,1089,4,0011aAff";
     assert(at_extract_mhttp_content_frame(inline_content, values, consumed) ==
@@ -36,6 +44,18 @@ int main() {
         "+MHTTPURC: \"content\",0,724992,1085,4,\r\nE901";
     assert(at_extract_mhttp_content_frame(partial, values, consumed) ==
            AtMhttpFrameResult::NeedMore);
+    const std::string partial_wrapped =
+        "+MHTTPURC: \"content\",0,724992,1085,4,E901\r";
+    assert(at_extract_mhttp_content_frame(partial_wrapped, values, consumed) ==
+           AtMhttpFrameResult::NeedMore);
+
+    const std::string malformed_then_valid =
+        "+MHTTPURC: \"content\",0,724992,1085,4,E901ZZZZ"
+        "+MHTTPURC: \"content\",0,724992,1089,4,0011AAFF";
+    assert(at_extract_mhttp_content_frame(malformed_then_valid, values,
+                                          consumed) ==
+           AtMhttpFrameResult::Malformed);
+    assert(consumed == malformed_then_valid.find("+MHTTPURC", 1U));
     assert(at_extract_mhttp_content_frame("+CPIN: READY\r\n", values,
                                           consumed) ==
            AtMhttpFrameResult::NotContent);

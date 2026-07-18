@@ -1,6 +1,5 @@
 #include "at_parser.h"
 
-#include <algorithm>
 #include <cerrno>
 #include <climits>
 #include <cstdlib>
@@ -24,6 +23,13 @@ AtMhttpFrameResult at_extract_mhttp_content_frame(const std::string &buffer,
     static const std::string content_type = "\"content\"";
     values.clear();
     consumed = 0U;
+
+    const auto malformed = [&](size_t search_start) {
+        const size_t next_frame = buffer.find(prefix, search_start);
+        consumed = next_frame == std::string::npos ? buffer.size() : next_frame;
+        values.clear();
+        return AtMhttpFrameResult::Malformed;
+    };
 
     if (buffer.compare(0U, prefix.size(), prefix) != 0) {
         return AtMhttpFrameResult::NotContent;
@@ -52,7 +58,7 @@ AtMhttpFrameResult at_extract_mhttp_content_frame(const std::string &buffer,
     const std::string current_length_text =
         buffer.substr(previous_comma + 1U, comma - previous_comma - 1U);
     if (current_length_text.empty()) {
-        return AtMhttpFrameResult::Malformed;
+        return malformed(comma + 1U);
     }
     char *end = nullptr;
     errno = 0;
@@ -61,37 +67,49 @@ AtMhttpFrameResult at_extract_mhttp_content_frame(const std::string &buffer,
     if (errno != 0 || end != current_length_text.c_str() +
                                 current_length_text.size() ||
         current_length > (SIZE_MAX / 2U)) {
-        return AtMhttpFrameResult::Malformed;
+        return malformed(comma + 1U);
     }
 
     const size_t encoded_length = static_cast<size_t>(current_length) * 2U;
-    size_t payload_start = comma + 1U;
-    if (payload_start < buffer.size() && buffer[payload_start] == '\r') {
-        if (payload_start + 1U >= buffer.size()) {
-            return AtMhttpFrameResult::NeedMore;
-        }
-        if (buffer[payload_start + 1U] != '\n') {
-            return AtMhttpFrameResult::Malformed;
-        }
-        payload_start += 2U;
-    }
-    if (buffer.size() - payload_start < encoded_length) {
-        return AtMhttpFrameResult::NeedMore;
-    }
-
-    const size_t payload_end = payload_start + encoded_length;
     const auto is_hex = [](unsigned char ch) {
         return (ch >= '0' && ch <= '9') || (ch >= 'A' && ch <= 'F') ||
                (ch >= 'a' && ch <= 'f');
     };
-    if (!std::all_of(buffer.begin() + payload_start,
-                     buffer.begin() + payload_end, is_hex)) {
-        return AtMhttpFrameResult::Malformed;
-    }
 
     values.assign(buffer, values_start, comma + 1U - values_start);
-    values.append(buffer, payload_start, encoded_length);
-    consumed = payload_end;
+    values.reserve(values.size() + encoded_length);
+
+    // ML307C may wrap the HEX body itself with CRLF, not only place one CRLF
+    // between metadata and data. Count HEX digits instead of raw UART bytes so
+    // a 1460-byte body remains one logical URC regardless of line wrapping.
+    size_t cursor = comma + 1U;
+    size_t encoded = 0U;
+    while (encoded < encoded_length) {
+        if (cursor >= buffer.size()) {
+            values.clear();
+            return AtMhttpFrameResult::NeedMore;
+        }
+        const unsigned char ch = static_cast<unsigned char>(buffer[cursor]);
+        if (is_hex(ch)) {
+            values.push_back(static_cast<char>(ch));
+            ++encoded;
+            ++cursor;
+            continue;
+        }
+        if (ch == '\r') {
+            if (cursor + 1U >= buffer.size()) {
+                values.clear();
+                return AtMhttpFrameResult::NeedMore;
+            }
+            if (buffer[cursor + 1U] == '\n') {
+                cursor += 2U;
+                continue;
+            }
+        }
+        return malformed(cursor + 1U);
+    }
+
+    consumed = cursor;
     if (buffer.size() >= consumed + 2U && buffer[consumed] == '\r' &&
         buffer[consumed + 1U] == '\n') {
         consumed += 2U;

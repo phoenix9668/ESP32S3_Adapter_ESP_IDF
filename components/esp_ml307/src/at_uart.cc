@@ -367,12 +367,13 @@ bool AtUart::ParseResponse() {
             return false;
         }
         if (mhttp_result == AtMhttpFrameResult::Malformed) {
-            ESP_LOGE(TAG, "Malformed MHTTPURC content frame");
-            const size_t malformed_end = rx_buffer_.find("\r\n");
-            rx_buffer_.erase(0, malformed_end == std::string::npos
-                                    ? rx_buffer_.size()
-                                    : malformed_end + 2U);
-            return true;
+            ESP_LOGE(TAG, "Malformed MHTTPURC content frame: discard=%u buffered=%u",
+                     static_cast<unsigned>(consumed),
+                     static_cast<unsigned>(rx_buffer_.size()));
+            rx_buffer_.erase(0, consumed == 0U ? rx_buffer_.size() : consumed);
+            // Make the active HTTP stream fail immediately. Silently dropping
+            // one content URC causes misleading gaps in every following URC.
+            command = "FIFO_OVERFLOW";
         }
         if (mhttp_result == AtMhttpFrameResult::Complete) {
             command = "MHTTPURC";
