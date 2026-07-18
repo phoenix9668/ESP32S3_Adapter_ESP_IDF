@@ -45,6 +45,8 @@ constexpr uint32_t kUploadRetryDelayMs = 5U * 1000U;
 constexpr uint32_t kMetadataRetryDelayMs = 60U * 1000U;
 constexpr uint32_t kIdleDelayMs = 250U;
 constexpr uint32_t kOtaServiceIntervalMs = 5U * 1000U;
+constexpr uint32_t kGnssStateVerifyDelayMs = 250U;
+constexpr unsigned kGnssStateVerifyAttempts = 7U;
 constexpr EventBits_t kReplyEvent = BIT0;
 constexpr EventBits_t kDisconnectedEvent = BIT1;
 constexpr size_t kOneNetPayloadMax = 1024U;
@@ -579,14 +581,21 @@ bool set_gnss_engine_enabled(const std::shared_ptr<AtUart> &uart,
   }
 
   const char *command = enabled ? "AT+MGNSS=1" : "AT+MGNSS=0";
-  if (uart->SendCommand(command, 5000) &&
-      query_gnss_state(uart, &state) && state == expected) {
-    return true;
-  }
-  if (query_gnss_state(uart, &state) && state == expected) {
-    ESP_LOGW(TAG, "GNSS state command returned an error but state=%u",
-             state);
-    return true;
+  const bool command_ok = uart->SendCommand(command, 5000);
+  // ML307C can acknowledge MGNSS before the GNSS engine state changes. Poll
+  // for the asynchronous transition instead of issuing back-to-back queries
+  // and reporting a false failure during the next modem operation.
+  for (unsigned attempt = 0U; attempt < kGnssStateVerifyAttempts; ++attempt) {
+    if (attempt > 0U) {
+      vTaskDelay(pdMS_TO_TICKS(kGnssStateVerifyDelayMs));
+    }
+    if (query_gnss_state(uart, &state) && state == expected) {
+      if (!command_ok) {
+        ESP_LOGW(TAG, "GNSS state command returned an error but state=%u",
+                 state);
+      }
+      return true;
+    }
   }
   ESP_LOGW(TAG, "failed to set GNSS engine state=%u, final state=%u",
            expected, state);
