@@ -9,6 +9,8 @@ EC800K/QuecPython，也不需要 VPS 或自有域名。
 工程只允许 ESP-IDF v5.5.4 和 `esp32s3` target。CMake 会检查精确版本，
 用 v6.x 或其他版本配置会立即失败。
 
+### macOS 工具链
+
 首次安装：
 
 ```sh
@@ -30,6 +32,68 @@ idf.py fullclean build
 `/Users/gally/.espressif/tools`，但 ESP-IDF 的 `IDF_TOOLS_PATH` 定义的是其
 父目录，所以变量值必须为 `/Users/gally/.espressif`。VS Code 已固定相同路径，
 控制台走 USB Serial/JTAG；UART0 因而可专用于 ML307C。
+
+### Windows 10/11 工具链
+
+Windows 必须安装 **ESP-IDF v5.5.4**，不能选 v6.x。推荐使用 Espressif 官方
+Windows Installer，并在安装结束时选择“Run ESP-IDF PowerShell Environment”；
+以后从开始菜单打开对应 v5.5.4 的 ESP-IDF PowerShell。官方安装说明见
+[ESP-IDF v5.5.4 Windows Setup](https://docs.espressif.com/projects/esp-idf/en/v5.5.4/esp32s3/get-started/windows-setup.html)。
+
+ESP-IDF 和工程路径应尽量短，不要包含空格、括号或中文。建议例如：
+
+```text
+C:\Espressif\frameworks\esp-idf-v5.5.4
+C:\work\ESP32S3_Adapter_ESP_IDF
+```
+
+在 **ESP-IDF PowerShell** 中进入工程并验证。下文假设工程在 `C:\work`，实际
+使用时替换成自己的路径：
+
+```powershell
+Set-Location C:\work\ESP32S3_Adapter_ESP_IDF
+$env:IDF_PATH
+idf.py --version
+idf.py set-target esp32s3
+```
+
+本项目的应用必须签名。换到 Windows 电脑后，应从离线备份恢复**当前设备一直
+使用的同一把**私钥，随后才能构建：
+
+```powershell
+New-Item -ItemType Directory -Force .\keys | Out-Null
+Copy-Item E:\OFFLINE\ota_signing_key.pem .\keys\ota_signing_key.pem
+idf.py fullclean build
+```
+
+已经烧录或出货过设备后，绝对不要在新电脑上重新生成另一把密钥；否则已有设备
+会拒绝该电脑生成的 OTA 固件。只有全新项目第一次建密钥时，才执行后文的
+`generate_signing_key.ps1`。
+
+`idf.py --version` 必须输出 `ESP-IDF v5.5.4`。如果打开的是普通 PowerShell，
+可先执行已安装 v5.5.4 目录中的 `export.ps1`：
+
+```powershell
+Set-Location C:\Espressif\frameworks\esp-idf-v5.5.4
+.\export.ps1
+Set-Location C:\work\ESP32S3_Adapter_ESP_IDF
+```
+
+不要在 Git Bash、WSL 或普通 CMD 中混用下文的 PowerShell 脚本；Windows 串口
+使用 `COM5` 这类名称。可在设备管理器中查看“端口”，也可执行：
+
+```powershell
+[System.IO.Ports.SerialPort]::GetPortNames()
+```
+
+如果系统只因执行策略拒绝本仓库的 `.ps1`，可仅对**当前窗口**临时放行：
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+```
+
+不要永久关闭系统执行策略。ESP32-S3 日志走 USB Serial/JTAG 对应的 COM 口，
+不会占用连接 ML307C 的 UART0。
 
 ## ML307C 安全接线
 
@@ -61,7 +125,7 @@ Authorization 使用相同 Device Key 生成一小时有效的 HMAC-SHA1 设备�
 Device Key、完整 Token 或 Authorization。
 
 旧 NVS 的 `access_key`、`token_expiry` 仍可兼容读取，但新设备不要继续写入
-绝对过期时间。单台开发板可使用：
+绝对过期时间。单台开发板在 macOS 可使用：
 
 ```sh
 cp tools/onenet_nvs.csv.example tools/onenet_nvs.csv
@@ -70,6 +134,29 @@ bash tools/provision_onenet.sh
 # 或直接烧写 NVS：
 bash tools/provision_onenet.sh /dev/tty.usbmodem11201
 ```
+
+Windows 在 ESP-IDF PowerShell 中使用原生脚本，不需要安装 Bash：
+
+```powershell
+Copy-Item .\tools\onenet_nvs.csv.example .\tools\onenet_nvs.csv
+# 在本地编辑 onenet_nvs.csv 后，仅生成 build\onenet_nvs.bin：
+.\tools\provision_onenet.ps1
+# 生成并只烧写 OneNET NVS 分区到 0x9000：
+.\tools\provision_onenet.ps1 COM5
+```
+
+`provision_onenet.ps1 COM5` 只改写 `nvs` 分区，不会改写应用、`otadata` 或
+`rfid_store`。完整编译、烧录并查看日志的单台开发流程为：
+
+```powershell
+idf.py fullclean build
+idf.py -p COM5 flash
+.\tools\provision_onenet.ps1 COM5
+idf.py -p COM5 monitor
+```
+
+监视器占用串口时不能再次烧录；先按 `Ctrl+]` 退出 monitor。现场已有 RFID
+队列或 OneNET 凭据时不要执行 `idf.py erase-flash`。
 
 本地 CSV 和生成的 NVS bin 已加入 Git 忽略规则。
 
@@ -106,9 +193,10 @@ I (...) CELLULAR: firmware_version=1.0.0 delivered
 
 ## 100 台量产固化
 
-量产工具入口是 `tools/fleet`。公共签名固件只构建一次，每台设备只临时生成
-一个专属 NVS。加密清单默认保存在 `.factory/fleet.enc`，采用 scrypt 派生密钥
-和 AES-256-GCM 加密，文件权限为 0600。
+macOS 量产工具入口是 `tools/fleet`，Windows 对应入口是
+`tools\fleet.ps1`。公共签名固件只构建一次，每台设备只临时生成一个专属 NVS。
+加密清单默认保存在 `.factory/fleet.enc`，采用 scrypt 派生密钥和
+AES-256-GCM 加密；不要把工程目录放在多人共享位置。
 
 ### 1. 准备量产电脑
 
@@ -135,11 +223,38 @@ export FACTORY_MANIFEST_PASSPHRASE='至少 12 位的量产清单密码'
 access_key，也不是设备 Device Key。不要把这些 export 写进仓库脚本。密码丢失
 后无法恢复加密清单；应将密码和 `.factory/fleet.enc` 分开离线备份。
 
+Windows 在 ESP-IDF PowerShell 中执行：
+
+```powershell
+Copy-Item .\tools\fleet_config.json.example .\tools\fleet_config.json
+# 编辑 fleet_config.json 后设置非秘密参数：
+$env:ONENET_USER_ID = Read-Host "OneNET User ID"
+$env:ONENET_PRODUCT_ID = "yCwI3MB0Kq"
+# 秘密从交互提示读入，不写入 PowerShell 历史：
+$secret = Read-Host "OneNET account OpenAPI Access Key" -AsSecureString
+$env:ONENET_API_ACCESS_KEY = `
+    [System.Net.NetworkCredential]::new("", $secret).Password
+$secret = Read-Host "Factory manifest passphrase (at least 12 characters)" `
+    -AsSecureString
+$env:FACTORY_MANIFEST_PASSPHRASE = `
+    [System.Net.NetworkCredential]::new("", $secret).Password
+Remove-Variable secret
+```
+
+这些环境变量只在当前 PowerShell 窗口有效，关闭窗口后需要重新输入。
+
 ### 2. 导入 001 并创建 002–100
 
 ```sh
 tools/fleet prepare --start 1 --count 100
 tools/fleet status
+```
+
+Windows 对应命令：
+
+```powershell
+.\tools\fleet.ps1 prepare --start 1 --count 100
+.\tools\fleet.ps1 status
 ```
 
 工具逐个检查 `wireless-module-001` 到 `wireless-module-100`：
@@ -167,6 +282,15 @@ tools/generate_signing_key.sh
 再开始量产。已出货设备只接受该密钥签名的 OTA 应用；
 私钥丢失将永久失去后续 OTA 发布能力，替换私钥不能修复已出货设备。
 
+Windows 第一次生成签名密钥：
+
+```powershell
+.\tools\generate_signing_key.ps1
+```
+
+默认文件同样是 `keys\ota_signing_key.pem`。Windows 应把它复制到至少两个
+BitLocker 或其他离线加密介质；不要用邮件、聊天软件或普通网盘传输私钥。
+
 本方案启用签名应用校验和 OTA 回滚，但暂不烧录不可逆 Secure Boot eFuse，
 也不启用 Flash Encryption。
 
@@ -176,6 +300,14 @@ tools/generate_signing_key.sh
 export IDF_PATH=/Users/gally/.espressif/v5.5.4/esp-idf
 export IDF_TOOLS_PATH=/Users/gally/.espressif
 source /Users/gally/.espressif/v5.5.4/esp-idf/export.sh
+idf.py fullclean build
+```
+
+Windows 已经在 ESP-IDF v5.5.4 PowerShell 中，无需重复 `export.sh`：
+
+```powershell
+idf.py --version
+idf.py set-target esp32s3
 idf.py fullclean build
 ```
 
@@ -189,6 +321,13 @@ bootloader、分区表、初始 otadata 和签名应用。
 
 ```sh
 tools/fleet station --port auto
+```
+
+Windows 一次只连接一台设备时可自动选择 USB COM 口；若电脑存在多个 USB
+串口，建议始终显式填写端口：
+
+```powershell
+.\tools\fleet.ps1 station --port COM5
 ```
 
 每台流程为：
@@ -217,6 +356,12 @@ tools/fleet station --port /dev/tty.usbmodem11201
 tools/fleet retry --mac AA:BB:CC:DD:EE:FF --port auto
 ```
 
+Windows 返修命令：
+
+```powershell
+.\tools\fleet.ps1 retry --mac AA:BB:CC:DD:EE:FF --port COM5
+```
+
 `retry` 只允许已分配的 MAC，并强制复用原身份。即使第一次烧录断电，也不会
 占用下一个设备名。外部工具误写了 NVS 时，同样用真实 MAC 执行 `retry` 恢复
 清单中绑定的身份。
@@ -231,6 +376,13 @@ tools/fleet refresh-key --device-name wireless-module-001 --confirm
 tools/fleet retry --mac AA:BB:CC:DD:EE:FF --port auto
 ```
 
+Windows：
+
+```powershell
+.\tools\fleet.ps1 refresh-key --device-name wireless-module-001 --confirm
+.\tools\fleet.ps1 retry --mac AA:BB:CC:DD:EE:FF --port COM5
+```
+
 `refresh-key` 会从 OneNET 重新查询密钥并加密保存，但不显示密钥；没有显式
 `--confirm` 时拒绝修改。
 - 无法确认身份的板卡：隔离，不要通过修改 CSV 抢占新设备名。
@@ -240,6 +392,13 @@ tools/fleet retry --mac AA:BB:CC:DD:EE:FF --port auto
 ```sh
 tools/fleet status
 tools/fleet export-audit --output .factory/fleet-audit.csv
+```
+
+Windows 对应命令：
+
+```powershell
+.\tools\fleet.ps1 status
+.\tools\fleet.ps1 export-audit --output .factory\fleet-audit.csv
 ```
 
 审计 CSV 仅包含设备名、MAC、ICCID、版本、分配/烧录/验证时间和结果。量产结束
@@ -277,6 +436,16 @@ $sys/{productId}/{deviceName}/ota/inform_reply
 ```sh
 tools/build_ota.sh 1.1.0
 ```
+
+Windows 在 ESP-IDF v5.5.4 PowerShell 中执行：
+
+```powershell
+.\tools\build_ota.ps1 1.1.0
+```
+
+PowerShell 脚本与 macOS 脚本执行相同的版本匹配、`fullclean build`、RSA-3072
+签名验证、文件名长度和哈希检查。不要直接把 `build` 目录中名称相似的其他
+`.bin` 当作升级包。
 
 脚本会强制 ESP-IDF v5.5.4、执行 clean build、使用 RSA-3072 签名、再次验签并
 生成：
@@ -367,6 +536,18 @@ export IDF_TOOLS_PATH=/Users/gally/.espressif
 . /Users/gally/.espressif/v5.5.4/esp-idf/export.sh
 idf.py -p /dev/tty.usbmodemXXXX monitor
 ```
+
+Windows 的等价救援流程如下：
+
+```powershell
+.\tools\build_ota.ps1 1.0.2
+.\tools\recover_ota_app.ps1 COM5 .\dist\s3-1.0.2.bin
+idf.py -p COM5 monitor
+```
+
+`recover_ota_app.ps1` 与 macOS 脚本相同，只擦除 `0xF000` 起始的 8 KiB
+`otadata`，再把签名应用写入 `ota_0` 的 `0x20000`；不会写 OneNET NVS、
+`rfid_store`、bootloader 或分区表。
 
 不要执行 `erase-flash`。恢复固件上线并重新上报当前版本后，应删除/停止旧的失败
 任务，使用版本更高的新 `.bin`（例如 1.0.3）新建任务验证 OTA 修复。

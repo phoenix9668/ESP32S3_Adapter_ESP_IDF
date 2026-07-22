@@ -15,6 +15,12 @@ SPEC.loader.exec_module(fleet)
 
 
 class FleetTests(unittest.TestCase):
+    def test_idf_path_prefers_active_environment(self):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(
+            os.environ, {"IDF_PATH": directory}
+        ):
+            self.assertEqual(fleet.idf_path(), pathlib.Path(directory).resolve())
+
     def test_encrypted_manifest_round_trip_hides_device_key(self):
         with tempfile.TemporaryDirectory() as directory:
             private_dir = pathlib.Path(directory)

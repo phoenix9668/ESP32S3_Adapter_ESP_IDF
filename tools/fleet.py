@@ -38,7 +38,7 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 PRIVATE_DIR = ROOT / ".factory"
 MANIFEST_PATH = PRIVATE_DIR / "fleet.enc"
 CONFIG_PATH = ROOT / "tools" / "fleet_config.json"
-IDF_PATH = pathlib.Path("/Users/gally/.espressif/v5.5.4/esp-idf")
+MACOS_DEFAULT_IDF_PATH = pathlib.Path("/Users/gally/.espressif/v5.5.4/esp-idf")
 BUILD_DIR = ROOT / "build"
 MAGIC = b"ESP32S3-FLEET-1\0"
 NVS_OFFSET = "0x9000"
@@ -49,6 +49,23 @@ APP_NAME = "ESP32S3_Adapter_ESP_IDF"
 
 class FleetError(RuntimeError):
     pass
+
+
+def idf_path() -> pathlib.Path:
+    """Return the active ESP-IDF tree without baking a macOS path into Windows."""
+    configured = os.environ.get("IDF_PATH")
+    if configured:
+        result = pathlib.Path(configured).expanduser().resolve()
+    elif os.name == "nt":
+        raise FleetError(
+            "IDF_PATH is not set; open an ESP-IDF v5.5.4 PowerShell or run "
+            "the ESP-IDF export.ps1 script first"
+        )
+    else:
+        result = MACOS_DEFAULT_IDF_PATH
+    if not result.exists():
+        raise FleetError(f"ESP-IDF path does not exist: {result}")
+    return result
 
 
 def utc_now() -> str:
@@ -324,7 +341,7 @@ def command_prepare(args: argparse.Namespace) -> None:
 
 
 def esptool_path() -> pathlib.Path:
-    result = IDF_PATH / "components" / "esptool_py" / "esptool" / "esptool.py"
+    result = idf_path() / "components" / "esptool_py" / "esptool" / "esptool.py"
     if not result.exists():
         raise FleetError(f"Missing ESP-IDF v5.5.4 esptool: {result}")
     return result
@@ -337,7 +354,9 @@ def validate_factory_build() -> None:
     )
     if not app_bin.exists() or not key_path.exists():
         raise FleetError("Signed factory application or OTA signing key is missing")
-    espsecure = IDF_PATH / "components" / "esptool_py" / "esptool" / "espsecure.py"
+    espsecure = (
+        idf_path() / "components" / "esptool_py" / "esptool" / "espsecure.py"
+    )
     verify = subprocess.run(
         [
             sys.executable,
@@ -383,14 +402,40 @@ def choose_port(requested: str) -> str:
         return requested
     from serial.tools import list_ports
 
-    ports = [
-        item.device
-        for item in list_ports.comports()
-        if any(
-            marker in item.device.lower()
-            for marker in ("usbmodem", "usbserial", "slab", "wchusbserial")
+    ports = []
+    for item in list_ports.comports():
+        description = " ".join(
+            str(value or "")
+            for value in (
+                item.device,
+                item.description,
+                item.manufacturer,
+                item.hwid,
+            )
+        ).lower()
+        unix_usb = any(
+            marker in description
+            for marker in (
+                "usbmodem",
+                "usbserial",
+                "slab",
+                "wchusbserial",
+                "usb jtag",
+                "usb serial",
+                "espressif",
+                "cp210",
+                "ch340",
+                "ch910",
+                "ftdi",
+            )
         )
-    ]
+        windows_usb = (
+            os.name == "nt"
+            and item.device.lower().startswith("com")
+            and (getattr(item, "vid", None) is not None or "usb" in description)
+        )
+        if unix_usb or windows_usb:
+            ports.append(item.device)
     if len(ports) != 1:
         raise FleetError(
             "Auto port selection requires exactly one USB serial device; found: "
@@ -457,7 +502,7 @@ def generate_nvs(config: dict[str, Any], name: str, key: str) -> pathlib.Path:
             os.chmod(csv_path, 0o600)
             csv.writer(stream).writerows(rows)
         generator = (
-            IDF_PATH
+            idf_path()
             / "components"
             / "nvs_flash"
             / "nvs_partition_generator"
